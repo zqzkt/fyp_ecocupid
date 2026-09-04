@@ -204,6 +204,49 @@ def sync_x_jsonl(out_dir: Path | None = None) -> dict[str, int]:
     return counts
 
 
+def latest_post_id() -> str | None:
+    """Return the newest stored post ID for X API since_id checkpoints."""
+    base_url, key = _credentials()
+    params = {"select": "post_id,created_at", "order": "created_at.desc", "limit": 1}
+    response = requests.get(
+        f"{base_url}/rest/v1/x_posts",
+        params=params,
+        headers=_headers(key, with_bearer=True),
+        timeout=60,
+    )
+    if response.status_code in {401, 403} and "jwt" in response.text.lower():
+        response = requests.get(
+            f"{base_url}/rest/v1/x_posts",
+            params=params,
+            headers=_headers(key, with_bearer=False),
+            timeout=60,
+        )
+    if not response.ok:
+        raise SystemExit(f"Supabase checkpoint lookup failed ({response.status_code}): {response.text[:1200]}")
+    rows = response.json()
+    return str(rows[0]["post_id"]) if rows else None
+
+
+def sync_x_rows(
+    users: list[dict[str, Any]],
+    posts: list[dict[str, Any]],
+    replies: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Project and upsert freshly collected X rows without local staging files."""
+    base_url, key = _credentials()
+    session = requests.Session()
+    projected_users = [r for r in (project(row, USER_COLUMNS, "author_id") for row in users) if r]
+    projected_posts = [r for r in (project(row, POST_COLUMNS, "post_id") for row in posts) if r]
+    projected_replies = [r for r in (project(row, REPLY_COLUMNS, "reply_id") for row in replies) if r]
+    counts = {
+        "x_users": upsert_batches(session, base_url, key, "x_users", projected_users, "author_id"),
+        "x_posts": upsert_batches(session, base_url, key, "x_posts", projected_posts, "post_id"),
+        "x_replies": upsert_batches(session, base_url, key, "x_replies", projected_replies, "reply_id"),
+    }
+    print(json.dumps(counts, indent=2))
+    return counts
+
+
 if __name__ == "__main__":
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_X_DIR
     sync_x_jsonl(target)

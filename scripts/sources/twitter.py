@@ -5,8 +5,8 @@ X pay-per-use (approx.):
   user read  $0.010  (author expansions)
   media read $0.005  (media expansions)
 
-Reuse data/raw/x/*.jsonl. Do not re-run search unless you pass --force.
-The default collection includes a small reply sample and author expansions.
+Use the newest post stored in Supabase as the daily checkpoint. The default
+collection includes a small reply sample and author expansions.
 """
 
 from __future__ import annotations
@@ -213,6 +213,7 @@ def search_pages(
     collected_at: str,
     is_reply: bool,
     include_users: bool,
+    since_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     posts: list[dict[str, Any]] = []
     users_out: dict[str, dict[str, Any]] = {}
@@ -228,6 +229,8 @@ def search_pages(
         if include_users:
             params["expansions"] = "author_id"
             params["user.fields"] = USER_FIELDS
+        if since_id:
+            params["since_id"] = since_id
         if next_token:
             params["next_token"] = next_token
 
@@ -289,25 +292,6 @@ def collect_replies(
     return replies, users
 
 
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists() or path.stat().st_size == 0:
-        return []
-    rows: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
-
-
 def merge_by_id(existing: list[dict[str, Any]], incoming: list[dict[str, Any]], id_key: str) -> list[dict[str, Any]]:
     by_id: dict[str, dict[str, Any]] = {}
     for row in existing + incoming:
@@ -344,19 +328,22 @@ def estimate_cost_usd(max_posts: int, include_users: bool, with_replies: bool, r
     return round(posts * POST_READ_USD + users * USER_READ_USD, 4)
 
 
-def _sync_supabase(out_dir: Path) -> None:
-    scripts_dir = str(REPO_ROOT / "scripts")
-    if scripts_dir not in sys.path:
-        sys.path.insert(0, scripts_dir)
-    from supabase.twitter_supabase import sync_x_jsonl
+def _sync_supabase(
+    users: list[dict[str, Any]],
+    posts: list[dict[str, Any]],
+    replies: list[dict[str, Any]],
+) -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from supabase.twitter_pipeline import sync_x_rows
 
-    print("Upserting JSONL into Supabase...")
-    sync_x_jsonl(out_dir)
+    print("Upserting fresh rows into Supabase...")
+    sync_x_rows(users, posts, replies)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Collect EcoInsights X data. Default is cheapest: reuse files, no new API calls."
+        description="Collect EcoInsights X data and upsert it directly into Supabase."
     )
     parser.add_argument("--max-posts", type=int, default=20, help="New posts to fetch. Min billed page is 10.")
     parser.add_argument("--max-spend", type=float, default=DEFAULT_MAX_SPEND_USD, help="Abort if estimate exceeds this USD.")
@@ -386,24 +373,13 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="Maximum replies to fetch per selected conversation.",
     )
-    parser.add_argument("--force", action="store_true", help="Call the API even if data/raw/x already has posts.")
+    parser.add_argument("--force", action="store_true", help="Ignore the Supabase checkpoint and search recent posts again.")
     parser.add_argument("--dry-run", action="store_true", help="Print cost estimate only. No API call.")
-    parser.add_argument("--out-dir", type=Path, default=REPO_ROOT / "data" / "raw" / "x")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    out_dir = args.out_dir
-    existing = out_dir / "x_posts.jsonl"
-
-    if existing.exists() and existing.stat().st_size > 0 and not args.force:
-        print(
-            f"Reusing {existing} (no API call). "
-            "Pass --force only if you accept another billed search."
-        )
-        _sync_supabase(out_dir)
-        return
 
     if args.max_posts > HARD_MAX_POSTS:
         raise SystemExit(f"--max-posts {args.max_posts} exceeds hard cap {HARD_MAX_POSTS} (cost control).")
@@ -426,11 +402,21 @@ def main() -> None:
             "Lower --max-posts or raise --max-spend."
         )
 
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from supabase.twitter_pipeline import latest_post_id
+
+    since_id = None if args.force else latest_post_id()
+    if since_id:
+        print(f"Searching for posts newer than Supabase checkpoint {since_id}...")
+    else:
+        print("No Supabase checkpoint found; searching recent posts...")
+
     session = _client()
     collected_at = datetime.now(timezone.utc).isoformat()
-    print(f"Searching ({args.max_posts} posts), single query...")
+    print(f"Searching (up to {args.max_posts} new posts), single query...")
     seed_posts, all_users = search_pages(
-        session, KEYWORD_QUERY, args.max_posts, collected_at, False, args.with_users
+        session, KEYWORD_QUERY, args.max_posts, collected_at, False, args.with_users, since_id
     )
     seed_posts = [p for p in dedupe_posts(seed_posts) if not p.get("is_reply")]
 
@@ -468,22 +454,12 @@ def main() -> None:
                 }
             )
 
-    posts_path = out_dir / "x_posts.jsonl"
-    users_path = out_dir / "x_users.jsonl"
-    replies_path = out_dir / "x_replies.jsonl"
-    seed_posts = merge_by_id(read_jsonl(posts_path), seed_posts, "post_id")
-    users = merge_by_id(read_jsonl(users_path), list(all_users.values()), "author_id")
-    reply_rows = merge_by_id(read_jsonl(replies_path), reply_rows, "reply_id")
-    write_jsonl(posts_path, seed_posts)
-    write_jsonl(users_path, users)
-    write_jsonl(replies_path, reply_rows)
+    users = list(all_users.values())
     stats = summarize(seed_posts, reply_rows, users)
     billed_posts = len(seed_posts) + len(reply_rows)
     stats["approx_billed_usd"] = round(billed_posts * POST_READ_USD + len(users) * USER_READ_USD, 4)
-    (out_dir / "collection_summary.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
     print(json.dumps(stats, indent=2))
-    print(f"Wrote {out_dir}")
-    _sync_supabase(out_dir)
+    _sync_supabase(users, seed_posts, reply_rows)
 
 
 if __name__ == "__main__":
