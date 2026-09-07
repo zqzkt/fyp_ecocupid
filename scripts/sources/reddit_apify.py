@@ -2,6 +2,8 @@ from apify_client import ApifyClient
 from urllib.parse import quote_plus
 import pandas as pd
 import os
+import sys
+from pathlib import Path
 
 # =====================================================
 # CONFIGURATION
@@ -21,15 +23,15 @@ topics = [
 ]
 
 countries = [
-    "Singapore",
+    # "Singapore",
     # "Malaysia",
     # "Indonesia",
     # "Philippines",
-    # "Brunei",
+    "Brunei",
     # "Thailand"
 ]
 
-MAX_POSTS = 3
+MAX_POSTS = 2
 MAX_COMMENTS = 2
 
 # =====================================================
@@ -200,6 +202,47 @@ def append_unique_rows(new_df, csv_file, duplicate_column):
 
 posts_df = append_unique_rows(posts_df, posts_file, "post_id")
 comments_df = append_unique_rows(comments_df, comments_file, "comment_id")
+
+# =====================================================
+# SYNC TO SUPABASE
+# =====================================================
+
+def _sync_supabase(posts: list[dict], comments: list[dict]) -> None:
+    """Sync cleaned Reddit data to Supabase."""
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(repo_root / ".env")
+        
+        # DEBUG: Check credentials
+        url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+        key = os.environ.get("SUPABASE_KEY", "").strip()
+        print(f"\nDEBUG: SUPABASE_URL = '{url}'")
+        print(f"DEBUG: SUPABASE_KEY = {'[SET]' if key else '[EMPTY]'} (length: {len(key)})")
+        
+        if not url or not key:
+            print("✗ Missing SUPABASE_URL or SUPABASE_KEY in .env")
+            return
+        
+        from supabase.reddit_pipeline import sync_reddit_data
+        print("Syncing to Supabase...")
+        # Convert NaN to None for JSON serialization
+        posts_dict = pd.DataFrame(posts).where(pd.notna(pd.DataFrame(posts)), None).to_dict('records')
+        comments_dict = pd.DataFrame(comments).where(pd.notna(pd.DataFrame(comments)), None).to_dict('records')
+        counts = sync_reddit_data(posts_dict, comments_dict)
+        print("✓ Supabase sync successful")
+        print(f"Upserted: {counts}")
+    except ImportError as e:
+        print(f"✗ Import error: {e}")
+    except Exception as e:
+        print(f"✗ Supabase sync failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+_sync_supabase(posts_df.to_dict('records'), comments_df.to_dict('records'))
 
 # =====================================================
 # SUMMARY
