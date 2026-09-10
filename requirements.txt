@@ -1,6 +1,0 @@
-apify-client
-python-dotenv
-supabase
-requests
-feedparser
-pandas

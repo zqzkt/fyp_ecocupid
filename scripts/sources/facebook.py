@@ -1,6 +1,8 @@
 import os
 import json
 import re
+import sys
+import unicodedata
 from pathlib import Path
 from collections import Counter, defaultdict
 
@@ -17,17 +19,15 @@ from apify_client import ApifyClient
 # Therefore parents[2] = repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from supabase.facebook_pipeline import sync_facebook_rows
+
 load_dotenv(REPO_ROOT / ".env")
 
 APIFY_TOKEN = os.getenv("APIFY_TOKEN")
-
-if not APIFY_TOKEN:
-    raise RuntimeError(
-        "APIFY_TOKEN was not found. "
-        "Make sure your .env file is in the repo root."
-    )
-
-client = ApifyClient(APIFY_TOKEN)
+client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
 
 
 # =========================================================
@@ -42,44 +42,37 @@ COMMENTS_ACTOR = "apify/facebook-comments-scraper"
 # SCRAPING CONFIGURATION
 # =========================================================
 
-# KEEP THESE SMALL WHILE TESTING
-#
-# Later for a full run, you can increase them.
-POST_LIMIT_PER_PAGE = 10
+POST_LIMIT_PER_PAGE = 25
 COMMENT_LIMIT_PER_POST = 10
+POST_DATE_RANGE = "60 days"
 
-POST_DATE_RANGE = "30 days"
-
-# Maximum number of posts from the SAME topic that
-# can be selected for comment scraping.
-MAX_POSTS_PER_TOPIC_FOR_COMMENTS = 3
+# Maximum number of selected posts from the same topic.
+MAX_POSTS_PER_TOPIC_FOR_COMMENTS = 4
 
 # Maximum total number of posts whose comments we scrape.
-MAX_TOTAL_POSTS_FOR_COMMENTS = 15
+MAX_TOTAL_POSTS_FOR_COMMENTS = 25
 
 
 # =========================================================
 # APIFY COST SAFETY
 # =========================================================
 
-# Keep these low during testing.
-# Increase only when we are ready for the full run.
-
-POST_RUN_MAX_COST_USD = 1.50
-COMMENT_RUN_MAX_COST_USD = 0.50
+POST_RUN_MAX_COST_USD = 2.00
+COMMENT_RUN_MAX_COST_USD = 1.00
 
 
 # =========================================================
-# CACHE SETTINGS
+# CACHE + UPLOAD SETTINGS
 # =========================================================
 
-# IMPORTANT:
-# Once you successfully scrape posts, you can set this to True.
-# Then the program will use the saved JSON instead of calling
-# Apify again while you work on your classification logic.
+# Keep these True while improving classification so that
+# no additional Apify charges are incurred.
+USE_CACHED_POSTS = True
+USE_CACHED_COMMENTS = True
 
-USE_CACHED_POSTS = False
-USE_CACHED_COMMENTS = False
+# Supabase already contains the Facebook tables, so keeping
+# this True will upsert the newly classified posts/comments.
+UPLOAD_TO_SUPABASE = True
 
 DATA_DIR = REPO_ROOT / "data" / "raw"
 
@@ -90,6 +83,14 @@ ENVIRONMENTAL_POSTS_FILE = (
     DATA_DIR / "facebook_posts_environmental.json"
 )
 
+REJECTED_POSTS_FILE = (
+    DATA_DIR / "facebook_posts_rejected.json"
+)
+
+NORMALISED_POSTS_FILE = (
+    DATA_DIR / "facebook_posts_normalised.json"
+)
+
 NORMALISED_COMMENTS_FILE = (
     DATA_DIR / "facebook_comments_normalised.json"
 )
@@ -98,13 +99,6 @@ NORMALISED_COMMENTS_FILE = (
 # =========================================================
 # FACEBOOK SOURCES
 # =========================================================
-
-# For now we are testing Singapore.
-#
-# Add more sources/countries later.
-#
-# Having different types of pages reduces the risk of your
-# dataset being dominated by one issue such as haze.
 
 FACEBOOK_SOURCES = [
     # Singapore
@@ -197,15 +191,17 @@ FACEBOOK_SOURCES = [
 # ENVIRONMENTAL TOPICS
 # =========================================================
 
-# Instead of simply saying:
+# The original classifier was mainly English-only. This version
+# includes terms observed in the cached ASEAN Facebook data,
+# especially Malay/Indonesian, Thai and Vietnamese.
 #
-# environmental = True / False
-#
-# we classify environmental posts into topics.
+# Important: these are classification keywords, not translations
+# shown to end users.
 
 ENVIRONMENT_TOPICS = {
 
     "air_pollution_haze": [
+        # English
         "haze",
         "air pollution",
         "air quality",
@@ -213,23 +209,80 @@ ENVIRONMENT_TOPICS = {
         "psi",
         "smoke haze",
         "smoke plume",
+        "clean air",
+
+        # Malay / Indonesian
+        "jerebu",
+        "pencemaran udara",
+        "kualiti udara",
+        "kabut asap",
+        "polusi udara",
+        "udara bersih",
+        "asap karhutla",
+
+        # Thai
+        "มลพิษทางอากาศ",
+        "ฝุ่น pm2.5",
+        "ฝุ่นพิษ",
+        "อากาศสะอาด",
+        "หมอกควัน",
+
+        # Vietnamese
+        "ô nhiễm không khí",
+        "chất lượng không khí",
+        "không khí sạch",
+
+        # Filipino
+        "polusyon sa hangin",
+        "malinis na hangin",
     ],
 
     "climate_change_heat": [
+        # English
         "climate change",
         "global warming",
         "climate crisis",
+        "climate emergency",
+        "climate action",
         "extreme heat",
         "heatwave",
         "heat wave",
         "rising temperature",
         "climate adaptation",
         "climate resilience",
+        "extreme weather",
+
+        # Malay / Indonesian
+        "perubahan iklim",
+        "pemanasan global",
+        "krisis iklim",
+        "cuaca ekstrem",
+        "gelombang haba",
+        "gelombang panas",
+
+        # Thai
+        "การเปลี่ยนแปลงสภาพภูมิอากาศ",
+        "ภาวะโลกร้อน",
+        "โลกร้อน",
+        "วิกฤตสภาพภูมิอากาศ",
+        "คลื่นความร้อน",
+
+        # Vietnamese
+        "biến đổi khí hậu",
+        "nóng lên toàn cầu",
+        "khủng hoảng khí hậu",
+        "nắng nóng cực đoan",
+
+        # Filipino
+        "pagbabago ng klima",
     ],
 
     "waste_recycling": [
+        # English
         "recycling",
+        "recycle",
         "plastic waste",
+        "plastic pollution",
         "food waste",
         "e-waste",
         "electronic waste",
@@ -238,9 +291,47 @@ ENVIRONMENT_TOPICS = {
         "waste reduction",
         "zero waste",
         "circular economy",
+        "litter",
+        "littering",
+        "trash",
+        "marine debris",
+
+        # Malay / Indonesian
+        "kitar semula",
+        "sisa plastik",
+        "sampah plastik",
+        "sisa makanan",
+        "pencemaran plastik",
+        "plastik sekali guna",
+        "daur ulang",
+        "limbah plastik",
+        "sampah makanan",
+        "polusi plastik",
+        "plastik sekali pakai",
+        "sampah",
+
+        # Thai
+        "ขยะ",
+        "รีไซเคิล",
+        "มลพิษพลาสติก",
+        "ขยะพลาสติก",
+        "พลาสติกใช้ครั้งเดียว",
+
+        # Vietnamese
+        "rác thải",
+        "tái chế",
+        "rác thải nhựa",
+        "ô nhiễm nhựa",
+        "nhựa dùng một lần",
+
+        # Filipino
+        "basura",
+        "pagre-recycle",
+        "polusyon sa plastik",
     ],
 
     "biodiversity_conservation": [
+        # English
         "biodiversity",
         "wildlife",
         "conservation",
@@ -249,22 +340,148 @@ ENVIRONMENT_TOPICS = {
         "ecosystem",
         "nature reserve",
         "species",
+        "threatened species",
+        "pollinator",
+        "pollination",
+        "native tree",
+        "native trees",
+        "forest restoration",
+        "ecological restoration",
         "coral",
         "mangrove",
+        "seagrass",
+        "hornbill",
+        "orchid",
+        "orangutan",
+        "whale shark",
+        "fungi",
+
+        # Malay
+        "biodiversiti",
+        "hidupan liar",
+        "pemuliharaan",
+        "spesies terancam",
+        "bakau",
+        "pemulihan hutan",
+        "khazanah alam",
+
+        # Indonesian
+        "keanekaragaman hayati",
+        "satwa liar",
+        "konservasi",
+        "spesies terancam",
+        "restorasi hutan",
+        "orangutan",
+        "hiu paus",
+
+        # Thai
+        "ความหลากหลายทางชีวภาพ",
+        "สัตว์ป่า",
+        "อนุรักษ์",
+        "ระบบนิเวศ",
+        "ถิ่นอาศัย",
+        "สูญพันธุ์",
+        "ป่าชายเลน",
+        "ฟื้นฟูป่า",
+
+        # Vietnamese
+        "đa dạng sinh học",
+        "động vật hoang dã",
+        "bảo tồn",
+        "hệ sinh thái",
+        "môi trường sống",
+        "tuyệt chủng",
+        "rừng ngập mặn",
+        "phục hồi rừng",
+
+        # Filipino
+        "pangangalaga",
+        "konserbasyon",
     ],
 
     "renewable_energy": [
+        # English
         "renewable energy",
         "solar energy",
         "solar power",
         "solar panel",
         "clean energy",
         "green energy",
-        "energy transition",
         "wind energy",
+        "hydropower",
+
+        # Malay / Indonesian
+        "tenaga boleh baharu",
+        "tenaga suria",
+        "tenaga bersih",
+        "energi terbarukan",
+        "tenaga surya",
+        "energi bersih",
+
+        # Thai
+        "พลังงานหมุนเวียน",
+        "พลังงานแสงอาทิตย์",
+        "พลังงานสะอาด",
+        "พลังงานลม",
+
+        # Vietnamese
+        "năng lượng tái tạo",
+        "năng lượng mặt trời",
+        "năng lượng sạch",
+        "năng lượng gió",
+    ],
+
+    "energy_policy_transition": [
+        # English
+        "energy transition",
+        "power sector",
+        "electricity generation",
+        "power generation",
+        "power plant",
+        "gas plant",
+        "coal plant",
+        "nuclear energy",
+        "nuclear power",
+        "energy policy",
+        "power development plan",
+        "pdp2026",
+        "electricity plan",
+        "energy security",
+        "fossil fuel",
+        "fossil fuels",
+        "data center",
+        "data centre",
+
+        # Malay / Indonesian
+        "transisi energi",
+        "kebijakan energi",
+        "pembangkit listrik",
+        "bahan bakar fosil",
+        "peralihan tenaga",
+        "dasar tenaga",
+        "loji janakuasa",
+        "bahan api fosil",
+
+        # Thai
+        "เปลี่ยนผ่านพลังงาน",
+        "พลังงานไทย",
+        "โรงไฟฟ้า",
+        "ไฟฟ้า",
+        "แผนพัฒนากำลังผลิตไฟฟ้า",
+        "ก๊าซฟอสซิล",
+        "เชื้อเพลิงฟอสซิล",
+        "นิวเคลียร์",
+        "ดาต้าเซ็นเตอร์",
+
+        # Vietnamese
+        "chuyển dịch năng lượng",
+        "chính sách năng lượng",
+        "nhà máy điện",
+        "nhiên liệu hóa thạch",
     ],
 
     "carbon_emissions": [
+        # English
         "carbon emissions",
         "carbon emission",
         "carbon footprint",
@@ -274,9 +491,35 @@ ENVIRONMENT_TOPICS = {
         "decarbonisation",
         "decarbonization",
         "carbon neutral",
+        "carbon dioxide",
+        "co2 emissions",
+        "carbon storage",
+        "blue carbon",
+
+        # Malay / Indonesian
+        "pelepasan karbon",
+        "gas rumah hijau",
+        "neutral karbon",
+        "jejak karbon",
+        "emisi karbon",
+        "gas rumah kaca",
+
+        # Thai
+        "การปล่อยคาร์บอน",
+        "ก๊าซเรือนกระจก",
+        "คาร์บอนสุทธิเป็นศูนย์",
+        "คาร์บอนฟุตพรินต์",
+
+        # Vietnamese
+        "phát thải carbon",
+        "khí nhà kính",
+        "dấu chân carbon",
+        "trung hòa carbon",
+        "carbon xanh",
     ],
 
     "water_flooding": [
+        # English
         "water pollution",
         "water conservation",
         "water scarcity",
@@ -285,9 +528,48 @@ ENVIRONMENT_TOPICS = {
         "flood",
         "drought",
         "water security",
+        "water level",
+        "dam level",
+        "dry spell",
+        "river drying",
+        "watershed",
+        "waterway",
+        "waterways",
+
+        # Malay / Indonesian
+        "pencemaran air",
+        "pemuliharaan air",
+        "kekurangan air",
+        "banjir",
+        "kemarau",
+        "paras air",
+        "empangan",
+        "sungai",
+        "polusi air",
+        "kekeringan",
+        "tinggi muka air",
+        "bendungan",
+        "daerah aliran sungai",
+
+        # Thai
+        "มลพิษทางน้ำ",
+        "น้ำท่วม",
+        "ภัยแล้ง",
+        "ระดับน้ำ",
+        "เขื่อน",
+        "ลุ่มน้ำ",
+
+        # Vietnamese
+        "ô nhiễm nước",
+        "lũ lụt",
+        "ngập lụt",
+        "hạn hán",
+        "mực nước",
+        "lưu vực",
     ],
 
     "deforestation_land_use": [
+        # English
         "deforestation",
         "forest clearing",
         "land clearing",
@@ -296,9 +578,47 @@ ENVIRONMENT_TOPICS = {
         "forest fires",
         "peat fire",
         "peatland",
+        "wildfire",
+        "wildfires",
+        "forest loss",
+        "illegal logging",
+        "forest crime",
+        "land conversion",
+
+        # Malay
+        "penebangan hutan",
+        "pembukaan tanah",
+        "kebakaran hutan",
+        "tanah gambut",
+        "pembalakan haram",
+        "guna tanah",
+
+        # Indonesian
+        "deforestasi",
+        "pembukaan lahan",
+        "kebakaran hutan",
+        "karhutla",
+        "gambut",
+        "pembalakan liar",
+        "alih fungsi lahan",
+
+        # Thai
+        "ตัดไม้ทำลายป่า",
+        "ไฟป่า",
+        "บุกรุกป่า",
+        "การใช้ที่ดิน",
+        "ป่าพรุ",
+
+        # Vietnamese
+        "phá rừng",
+        "cháy rừng",
+        "chuyển đổi đất",
+        "khai thác gỗ trái phép",
+        "đất than bùn",
     ],
 
     "sustainable_consumption": [
+        # English
         "sustainability",
         "sustainable living",
         "sustainable consumption",
@@ -307,6 +627,160 @@ ENVIRONMENT_TOPICS = {
         "eco friendly",
         "reuse",
         "reusable",
+        "sustainable lifestyle",
+        "responsible consumption",
+        "sustainable choice",
+        "sustainable choices",
+
+        # Malay / Indonesian
+        "kelestarian",
+        "kehidupan lestari",
+        "penggunaan mampan",
+        "mesra alam",
+        "guna semula",
+        "mampan",
+        "keberlanjutan",
+        "gaya hidup berkelanjutan",
+        "konsumsi berkelanjutan",
+        "ramah lingkungan",
+        "guna ulang",
+
+        # Thai
+        "ความยั่งยืน",
+        "การบริโภคอย่างยั่งยืน",
+        "เป็นมิตรต่อสิ่งแวดล้อม",
+        "ใช้ซ้ำ",
+
+        # Vietnamese
+        "bền vững",
+        "tiêu dùng bền vững",
+        "sống xanh",
+        "thân thiện với môi trường",
+        "tái sử dụng",
+    ],
+
+    "marine_ocean": [
+        # English
+        "ocean",
+        "oceans",
+        "marine conservation",
+        "marine ecosystem",
+        "coral reef",
+        "coral reefs",
+        "seagrass",
+        "blue carbon",
+        "high seas",
+        "ocean pollution",
+        "coastal ecosystem",
+
+        # Malay / Indonesian
+        "ekosistem laut",
+        "terumbu karang",
+        "padang lamun",
+        "laut lepas",
+        "pencemaran laut",
+
+        # Thai
+        "มหาสมุทร",
+        "ทะเล",
+        "แนวปะการัง",
+        "หญ้าทะเล",
+        "ระบบนิเวศทางทะเล",
+
+        # Vietnamese
+        "đại dương",
+        "rạn san hô",
+        "cỏ biển",
+        "hệ sinh thái biển",
+    ],
+
+    "environmental_governance_justice": [
+        # English
+        "environmental justice",
+        "environmental governance",
+        "environmental law",
+        "environmental policy",
+        "public participation",
+        "environmental impact assessment",
+        "environmental rights",
+        "right to a healthy environment",
+        "environmental interests",
+        "ecological disaster",
+        "indigenous land",
+        "indigenous community",
+        "indigenous communities",
+        "land rights",
+
+        # Malay
+        "tadbir urus alam sekitar",
+        "undang-undang alam sekitar",
+        "keadilan alam sekitar",
+        "hak tanah",
+        "orang asli",
+
+        # Indonesian
+        "keadilan lingkungan",
+        "tata kelola lingkungan",
+        "hukum lingkungan",
+        "hak atas tanah",
+        "masyarakat adat",
+        "bencana ekologis",
+
+        # Thai
+        "ธรรมาภิบาลด้านสิ่งแวดล้อม",
+        "กฎหมายสิ่งแวดล้อม",
+        "ความยุติธรรมด้านสิ่งแวดล้อม",
+        "สิทธิชุมชน",
+
+        # Vietnamese
+        "quản trị môi trường",
+        "luật môi trường",
+        "công lý môi trường",
+        "quyền đất đai",
+        "cộng đồng bản địa",
+    ],
+
+    "agriculture_food_systems": [
+        # English
+        "sustainable agriculture",
+        "food system",
+        "food systems",
+        "food security",
+        "agriculture",
+        "farming",
+        "farmer",
+        "farmers",
+        "pesticide",
+        "pesticides",
+        "genetically modified",
+        "genetically engineered",
+        "gmo",
+        "agroecology",
+
+        # Malay / Indonesian
+        "pertanian mampan",
+        "keselamatan makanan",
+        "petani",
+        "racun perosak",
+        "diubah suai secara genetik",
+        "pertanian berkelanjutan",
+        "ketahanan pangan",
+        "pestisida",
+        "rekayasa genetika",
+
+        # Thai
+        "เกษตรยั่งยืน",
+        "ความมั่นคงทางอาหาร",
+        "เกษตรกร",
+        "สารกำจัดศัตรูพืช",
+        "ดัดแปลงพันธุกรรม",
+
+        # Vietnamese
+        "nông nghiệp bền vững",
+        "an ninh lương thực",
+        "nông dân",
+        "thuốc trừ sâu",
+        "biến đổi gen",
     ],
 }
 
@@ -316,33 +790,25 @@ ENVIRONMENT_TOPICS = {
 # =========================================================
 
 def canonicalise_url(url):
-    """
-    Standardise URLs so they are easier to compare.
-    """
+    """Standardise URLs so they are easier to compare."""
 
     if not url:
         return ""
 
-    return url.rstrip("/").lower()
+    return str(url).rstrip("/").lower()
 
 
 def safe_int(value):
-    """
-    Convert engagement fields safely to integers.
-    """
+    """Convert engagement fields safely to integers."""
 
     try:
         return int(value or 0)
-
     except (TypeError, ValueError):
         return 0
 
 
 def get_page_name(post):
-    """
-    Apify may return pageName as either a string
-    or an object.
-    """
+    """Apify may return pageName as either a string or object."""
 
     page_name = post.get("pageName")
 
@@ -356,30 +822,127 @@ def get_page_name(post):
     return page_name or "Unknown"
 
 
+def normalise_text(value):
+    """Normalise Unicode consistently before keyword matching."""
+
+    return unicodedata.normalize(
+        "NFKC",
+        str(value or "")
+    ).lower()
+
+
 def keyword_present(text, keyword):
     """
-    Checks whether a keyword appears in the text.
+    Check whether a keyword appears in text.
 
-    Regex boundaries reduce accidental partial matches.
+    Latin-script terms use regex boundaries to reduce accidental
+    partial matches. For non-ASCII terms (for example Thai and
+    Vietnamese), substring matching is more reliable because some
+    scripts do not separate words in the same way as English.
     """
+
+    text = normalise_text(text)
+    keyword = normalise_text(keyword)
+
+    if not keyword:
+        return False
+
+    if any(ord(character) > 127 for character in keyword):
+        return keyword in text
 
     pattern = (
         r"(?<!\w)"
-        + re.escape(keyword.lower())
+        + re.escape(keyword)
         + r"(?!\w)"
     )
 
-    return re.search(
-        pattern,
-        text.lower()
-    ) is not None
+    return re.search(pattern, text) is not None
+
+
+def collect_ocr_text(value):
+    """
+    Recursively collect Apify/Facebook OCR text from media objects.
+
+    This helps classify image-heavy posts whose caption contains
+    little or no useful text.
+    """
+
+    collected = []
+
+    if isinstance(value, dict):
+        ocr_text = value.get("ocrText")
+
+        if isinstance(ocr_text, str) and ocr_text.strip():
+            collected.append(ocr_text)
+
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                collected.extend(
+                    collect_ocr_text(child)
+                )
+
+    elif isinstance(value, list):
+        for child in value:
+            collected.extend(
+                collect_ocr_text(child)
+            )
+
+    return collected
+
+
+def build_classification_text(post):
+    """
+    Build a richer text representation of a Facebook post.
+
+    In addition to the main caption, this includes preview text,
+    shared-post text, and media OCR text. These fields were important
+    in the cached ASEAN data, especially for Thai image-based posts.
+    """
+
+    text_parts = []
+
+    for field in (
+        "text",
+        "previewTitle",
+        "previewDescription",
+        "title",
+    ):
+        value = post.get(field)
+
+        if isinstance(value, str) and value.strip():
+            text_parts.append(value)
+
+    shared_post = post.get("sharedPost")
+
+    if isinstance(shared_post, dict):
+        for field in (
+            "text",
+            "previewTitle",
+            "previewDescription",
+            "title",
+        ):
+            value = shared_post.get(field)
+
+            if isinstance(value, str) and value.strip():
+                text_parts.append(value)
+
+        text_parts.extend(
+            collect_ocr_text(
+                shared_post.get("media")
+            )
+        )
+
+    text_parts.extend(
+        collect_ocr_text(
+            post.get("media")
+        )
+    )
+
+    return " ".join(text_parts)
 
 
 def save_json(data, filepath):
-    """
-    Save results locally so we do not need to repeatedly
-    pay Apify while debugging.
-    """
+    """Save local cache/output without repeated Apify calls."""
 
     filepath.parent.mkdir(
         parents=True,
@@ -391,7 +954,6 @@ def save_json(data, filepath):
         "w",
         encoding="utf-8"
     ) as file:
-
         json.dump(
             data,
             file,
@@ -403,17 +965,26 @@ def save_json(data, filepath):
 
 
 def load_json(filepath):
-    """
-    Load previously scraped data.
-    """
+    """Load previously saved JSON data."""
 
     with open(
         filepath,
         "r",
         encoding="utf-8"
     ) as file:
-
         return json.load(file)
+
+
+def require_apify_client():
+    """Only require an Apify token when a paid scrape is requested."""
+
+    if client is None:
+        raise RuntimeError(
+            "APIFY_TOKEN was not found. Add it to the repo-root "
+            ".env file before running a fresh Apify scrape."
+        )
+
+    return client
 
 
 # =========================================================
@@ -425,21 +996,17 @@ def fetch_facebook_posts(
     limit=POST_LIMIT_PER_PAGE
 ):
 
+    apify_client = require_apify_client()
+
     page_urls = [
-        {
-            "url": source["url"]
-        }
+        {"url": source["url"]}
         for source in sources
     ]
 
     run_input = {
-
         "startUrls": page_urls,
-
         "resultsLimit": limit,
-
         "onlyPostsNewerThan": POST_DATE_RANGE,
-
         "captionText": False,
     }
 
@@ -448,38 +1015,30 @@ def fetch_facebook_posts(
         f"for {len(page_urls)} page(s)..."
     )
 
-    run = client.actor(
+    run = apify_client.actor(
         POSTS_ACTOR
     ).call(
-
         run_input=run_input,
-
         max_total_charge_usd=(
             POST_RUN_MAX_COST_USD
         ),
     )
 
     if run is None:
-
         print(
             "Facebook post scraper failed "
             "to start."
         )
-
         return []
 
     dataset_id = run.default_dataset_id
 
     items = (
-        client
+        apify_client
         .dataset(dataset_id)
         .list_items()
         .items
     )
-
-    # -----------------------------------------------------
-    # Attach source/country information
-    # -----------------------------------------------------
 
     source_lookup = {
         canonicalise_url(source["url"]): source
@@ -487,49 +1046,46 @@ def fetch_facebook_posts(
     }
 
     enriched_posts = []
-
     seen_post_ids = set()
 
     for item in items:
-
         post = dict(item)
 
         post_id = str(
             post.get("postId") or ""
         )
 
-        # Avoid duplicate posts
         if post_id:
-
             if post_id in seen_post_ids:
                 continue
 
             seen_post_ids.add(post_id)
 
-        facebook_page_url = canonicalise_url(
-            post.get("facebookUrl")
-        )
+        # inputUrl is particularly useful for error records.
+        source_url_candidates = [
+            post.get("facebookUrl"),
+            post.get("inputUrl"),
+            post.get("url"),
+        ]
 
-        source_info = source_lookup.get(
-            facebook_page_url
-        )
+        source_info = None
+
+        for source_url in source_url_candidates:
+            source_info = source_lookup.get(
+                canonicalise_url(source_url)
+            )
+
+            if source_info:
+                break
 
         if source_info:
-
-            post["country"] = (
-                source_info["country"]
-            )
-
-            post["source_name"] = (
-                source_info["source_name"]
-            )
-
+            post["country"] = source_info["country"]
+            post["source_name"] = source_info["source_name"]
         else:
-
-            post["country"] = "Unknown"
-
+            post["country"] = post.get("country") or "Unknown"
             post["source_name"] = (
-                get_page_name(post)
+                post.get("source_name")
+                or get_page_name(post)
             )
 
         enriched_posts.append(post)
@@ -542,27 +1098,17 @@ def fetch_facebook_posts(
 # =========================================================
 
 def classify_environmental_post(post):
-    """
-    Identify which environmental topics appear
-    in a Facebook post.
-    """
+    """Identify environmental topics appearing in one Facebook post."""
 
-    text_parts = [
-        post.get("text") or "",
-        post.get("previewTitle") or "",
-        post.get("previewDescription") or "",
-    ]
+    # Error/no-item records are useful diagnostics but are not posts.
+    if not post.get("postId"):
+        return None
 
-    combined_text = " ".join(
-        text_parts
-    ).lower()
+    combined_text = build_classification_text(post)
 
     matched_topics = {}
 
-    for topic, keywords in (
-        ENVIRONMENT_TOPICS.items()
-    ):
-
+    for topic, keywords in ENVIRONMENT_TOPICS.items():
         matches = [
             keyword
             for keyword in keywords
@@ -573,93 +1119,78 @@ def classify_environmental_post(post):
         ]
 
         if matches:
-
             matched_topics[topic] = matches
 
-    # Not environmental according to our rules
     if not matched_topics:
         return None
 
-    # -----------------------------------------------------
-    # Choose primary topic
-    #
-    # First:
-    # topic with most keyword matches
-    #
-    # Tie-breaker:
-    # topic containing more specific/longer keywords
-    # -----------------------------------------------------
-
+    # Choose the topic with the most evidence. If tied, favour the
+    # topic whose matched terms are more specific/longer overall.
     primary_topic = max(
-
         matched_topics,
-
         key=lambda topic: (
-
-            len(
-                matched_topics[topic]
-            ),
-
+            len(matched_topics[topic]),
             sum(
                 len(keyword)
-                for keyword
-                in matched_topics[topic]
+                for keyword in matched_topics[topic]
             ),
         ),
     )
 
     classified_post = dict(post)
-
-    classified_post[
-        "primary_topic"
-    ] = primary_topic
-
-    classified_post[
-        "matched_topics"
-    ] = matched_topics
+    classified_post["primary_topic"] = primary_topic
+    classified_post["matched_topics"] = matched_topics
 
     return classified_post
 
 
-def filter_environmental_posts(posts):
+def split_environmental_posts(posts):
+    """Return (environmental_posts, rejected_posts)."""
 
     environmental_posts = []
+    rejected_posts = []
 
     for post in posts:
+        # Keep source errors separate from rejected real posts.
+        if not post.get("postId"):
+            continue
 
         classified_post = (
             classify_environmental_post(post)
         )
 
         if classified_post:
-
             environmental_posts.append(
                 classified_post
             )
+        else:
+            rejected_posts.append(post)
+
+    return environmental_posts, rejected_posts
+
+
+def filter_environmental_posts(posts):
+    """Backwards-compatible helper returning only accepted posts."""
+
+    environmental_posts, _ = (
+        split_environmental_posts(posts)
+    )
 
     return environmental_posts
 
 
 # =========================================================
-# TOPIC ANALYSIS
+# ANALYSIS / DIAGNOSTICS
 # =========================================================
 
 def print_topic_distribution(posts):
-
     if not posts:
-
-        print(
-            "\nNo environmental posts "
-            "available."
-        )
-
+        print("\nNo environmental posts available.")
         return
 
     counts = Counter(
-
         post["primary_topic"]
         for post in posts
-
     )
 
     total = len(posts)
@@ -668,18 +1199,69 @@ def print_topic_distribution(posts):
     print("ENVIRONMENTAL TOPIC DISTRIBUTION")
     print("==============================")
 
-    for topic, count in (
-        counts.most_common()
-    ):
-
-        percentage = (
-            count / total
-        ) * 100
+    for topic, count in counts.most_common():
+        percentage = (count / total) * 100
 
         print(
             f"{topic}: "
             f"{count} "
             f"({percentage:.1f}%)"
+        )
+
+
+def print_country_distribution(posts, heading):
+    counts = Counter(
+        post.get("country") or "Unknown"
+        for post in posts
+    )
+
+    print("\n==============================")
+    print(heading)
+    print("==============================")
+
+    for country, count in counts.most_common():
+        print(f"{country}: {count}")
+
+
+def print_source_coverage(posts):
+    counts = Counter(
+        post.get("source_name") or "Unknown"
+        for post in posts
+        if post.get("postId")
+    )
+
+    print("\n==============================")
+    print("SOURCE COVERAGE")
+    print("==============================")
+
+    for source in FACEBOOK_SOURCES:
+        source_name = source["source_name"]
+        print(
+            f"{source_name}: "
+            f"{counts.get(source_name, 0)} usable post(s)"
+        )
+
+
+def print_source_errors(posts):
+    errors = [
+        post
+        for post in posts
+        if not post.get("postId")
+        and post.get("error")
+    ]
+
+    if not errors:
+        return
+
+    print("\n==============================")
+    print("SOURCE ERRORS")
+    print("==============================")
+
+    for post in errors:
+        print(
+            f"{post.get('source_name', 'Unknown')}: "
+            f"{post.get('error')} - "
+            f"{post.get('errorDescription', '')}"
         )
 
 
@@ -696,236 +1278,145 @@ def select_diverse_posts_for_comments(
         MAX_TOTAL_POSTS_FOR_COMMENTS
     ),
 ):
-
     """
-    Creates a diversified sample for comment scraping.
+    Select a country- and topic-diverse set of posts for comments.
 
-    Important:
-    We DO NOT remove overrepresented topics from the raw
-    dataset.
+    The raw topic distribution is never altered. This function only
+    determines where the paid comment-scraping budget is spent.
 
-    Example:
-    If haze represents 70% of all posts, the raw topic
-    distribution still shows 70%.
-
-    This function only prevents us from spending most of
-    the comment-scraping budget on haze posts.
+    Selection goals:
+      1. Exclude posts with zero reported comments.
+      2. Rotate across countries so Malaysia/Thailand are not crowded
+         out by countries with more high-engagement posts.
+      3. Limit the number of selected posts from one topic.
+      4. Within those constraints, prefer engagement.
     """
 
-    grouped_posts = defaultdict(list)
+    candidates = [
+        post
+        for post in posts
+        if safe_int(post.get("comments")) > 0
+        and post.get("country")
+        and post.get("country") != "Unknown"
+    ]
 
-    for post in posts:
+    if not candidates:
+        return []
 
-        comment_count = safe_int(
-            post.get("comments")
-        )
+    grouped_by_country = defaultdict(list)
 
-        # There is little point paying the Comments Actor
-        # for a post Facebook reports as having 0 comments.
-        if comment_count <= 0:
-            continue
+    for post in candidates:
+        grouped_by_country[
+            post["country"]
+        ].append(post)
 
-        topic = post["primary_topic"]
-
-        grouped_posts[topic].append(
-            post
-        )
-
-    # -----------------------------------------------------
-    # Within each topic:
-    # prioritise posts generating more discussion
-    # -----------------------------------------------------
-
-    for topic in grouped_posts:
-
-        grouped_posts[topic].sort(
-
+    # Highest engagement first within each country.
+    for country in grouped_by_country:
+        grouped_by_country[country].sort(
             key=lambda post: (
-
-                safe_int(
-                    post.get("comments")
-                ),
-
-                safe_int(
-                    post.get("likes")
-                ),
-
-                safe_int(
-                    post.get("shares")
-                ),
-
+                safe_int(post.get("comments")),
+                safe_int(post.get("likes")),
+                safe_int(post.get("shares")),
             ),
-
             reverse=True
         )
 
-    if not grouped_posts:
+    candidate_topic_counts = Counter(
+        post["primary_topic"]
+        for post in candidates
+    )
 
-        return []
-
-    # -----------------------------------------------------
-    # Put less common topics first.
-    #
-    # This reduces the chance that one dominant topic
-    # uses the entire comment scraping budget.
-    # -----------------------------------------------------
-
-    topic_order = sorted(
-
-        grouped_posts.keys(),
-
-        key=lambda topic: (
-            len(grouped_posts[topic]),
-            topic
+    # Countries with fewer available candidates go first so they
+    # are less likely to be excluded by the overall 15-post cap.
+    country_order = sorted(
+        grouped_by_country,
+        key=lambda country: (
+            len(grouped_by_country[country]),
+            country,
         )
     )
 
     selected = []
+    selected_post_ids = set()
+    selected_topic_counts = Counter()
 
-    # -----------------------------------------------------
-    # Round-robin selection.
-    #
-    # Round 1:
-    # 1 post from every available topic.
-    #
-    # Round 2:
-    # another post from every available topic.
-    #
-    # etc.
-    # -----------------------------------------------------
+    while len(selected) < max_total:
+        progress_made = False
 
-    for position in range(
-        max_per_topic
-    ):
-
-        for topic in topic_order:
-
+        for country in country_order:
             if len(selected) >= max_total:
                 break
 
-            topic_posts = (
-                grouped_posts[topic]
+            available = [
+                post
+                for post in grouped_by_country[country]
+                if str(post.get("postId"))
+                not in selected_post_ids
+                and selected_topic_counts[
+                    post["primary_topic"]
+                ] < max_per_topic
+            ]
+
+            if not available:
+                continue
+
+            # Prefer topics not yet represented. If still tied,
+            # favour rarer topics, then higher engagement.
+            available.sort(
+                key=lambda post: (
+                    selected_topic_counts[
+                        post["primary_topic"]
+                    ],
+                    candidate_topic_counts[
+                        post["primary_topic"]
+                    ],
+                    -safe_int(post.get("comments")),
+                    -safe_int(post.get("likes")),
+                    -safe_int(post.get("shares")),
+                )
             )
 
-            if position < len(topic_posts):
+            chosen = available[0]
+            chosen_id = str(
+                chosen.get("postId")
+            )
 
-                selected.append(
-                    topic_posts[position]
-                )
+            selected.append(chosen)
+            selected_post_ids.add(chosen_id)
+            selected_topic_counts[
+                chosen["primary_topic"]
+            ] += 1
 
-        if len(selected) >= max_total:
+            progress_made = True
+
+        if not progress_made:
             break
 
     return selected
 
 
 # =========================================================
-# COMMENT SCRAPING
+# COMMENT SCRAPING + ENRICHMENT
 # =========================================================
 
-def fetch_facebook_comments(
-    posts,
-    limit=COMMENT_LIMIT_PER_POST
-):
+def refresh_comment_metadata(comments, posts):
+    """
+    Reattach current parent-post metadata to comments.
 
-    post_urls = [
-        {
-            "url": post["url"]
-        }
-        for post in posts
-        if post.get("url")
-    ]
-
-    if not post_urls:
-
-        print(
-            "\nNo post URLs available "
-            "for comment scraping."
-        )
-
-        return []
-
-    run_input = {
-
-        "startUrls": post_urls,
-
-        "resultsLimit": limit,
-
-        # Replies also count as individual results.
-        # Keep False for now to control cost.
-        "includeNestedComments": False,
-    }
-
-    print(
-        f"\nStarting comment scraper "
-        f"for {len(post_urls)} post(s)..."
-    )
-
-    run = client.actor(
-        COMMENTS_ACTOR
-    ).call(
-
-        run_input=run_input,
-
-        max_total_charge_usd=(
-            COMMENT_RUN_MAX_COST_USD
-        ),
-    )
-
-    if run is None:
-
-        print(
-            "Comment scraper failed "
-            "to start."
-        )
-
-        return []
-
-    dataset_id = run.default_dataset_id
-
-    items = (
-        client
-        .dataset(dataset_id)
-        .list_items()
-        .items
-    )
-
-    # -----------------------------------------------------
-    # Attach parent post metadata to comments
-    # -----------------------------------------------------
+    This is useful after reclassifying cached posts because the cached
+    comments may still contain the old primary_topic value.
+    """
 
     post_lookup = {
-
         canonicalise_url(post["url"]): post
-
         for post in posts
-
         if post.get("url")
     }
 
     enriched_comments = []
 
-    seen_comment_ids = set()
-
-    for item in items:
-
+    for item in comments:
         comment = dict(item)
-
-        comment_id = str(
-            comment.get("commentId") or ""
-        )
-
-        if comment_id:
-
-            if (
-                comment_id
-                in seen_comment_ids
-            ):
-                continue
-
-            seen_comment_ids.add(
-                comment_id
-            )
 
         parent_url = canonicalise_url(
             comment.get("facebookUrl")
@@ -936,32 +1427,144 @@ def fetch_facebook_comments(
         )
 
         if parent_post:
-
             comment["parent_post_id"] = (
                 parent_post.get("postId")
             )
-
             comment["country"] = (
                 parent_post.get("country")
             )
-
             comment["source_name"] = (
-                parent_post.get(
-                    "source_name"
-                )
+                parent_post.get("source_name")
             )
-
             comment["primary_topic"] = (
-                parent_post.get(
-                    "primary_topic"
-                )
+                parent_post.get("primary_topic")
             )
 
-        enriched_comments.append(
-            comment
-        )
+        enriched_comments.append(comment)
 
     return enriched_comments
+
+
+def fetch_facebook_comments(
+    posts,
+    limit=COMMENT_LIMIT_PER_POST
+):
+
+    apify_client = require_apify_client()
+
+    post_urls = [
+        {"url": post["url"]}
+        for post in posts
+        if post.get("url")
+    ]
+
+    if not post_urls:
+        print(
+            "\nNo post URLs available "
+            "for comment scraping."
+        )
+        return []
+
+    run_input = {
+        "startUrls": post_urls,
+        "resultsLimit": limit,
+        "includeNestedComments": False,
+    }
+
+    print(
+        f"\nStarting comment scraper "
+        f"for {len(post_urls)} post(s)..."
+    )
+
+    run = apify_client.actor(
+        COMMENTS_ACTOR
+    ).call(
+        run_input=run_input,
+        max_total_charge_usd=(
+            COMMENT_RUN_MAX_COST_USD
+        ),
+    )
+
+    if run is None:
+        print(
+            "Comment scraper failed "
+            "to start."
+        )
+        return []
+
+    dataset_id = run.default_dataset_id
+
+    items = (
+        apify_client
+        .dataset(dataset_id)
+        .list_items()
+        .items
+    )
+
+    unique_comments = []
+    seen_comment_ids = set()
+
+    for item in items:
+        comment = dict(item)
+
+        comment_id = str(
+            comment.get("commentId") or ""
+        )
+
+        if comment_id:
+            if comment_id in seen_comment_ids:
+                continue
+
+            seen_comment_ids.add(comment_id)
+
+        unique_comments.append(comment)
+
+    return refresh_comment_metadata(
+        unique_comments,
+        posts
+    )
+
+
+def print_cached_comment_coverage(
+    comments,
+    selected_posts
+):
+    """Explain whether the old cached comments match the new selection."""
+
+    cached_urls = {
+        canonicalise_url(
+            comment.get("facebookUrl")
+        )
+        for comment in comments
+        if comment.get("facebookUrl")
+    }
+
+    selected_urls = {
+        canonicalise_url(post.get("url"))
+        for post in selected_posts
+        if post.get("url")
+    }
+
+    overlap = len(
+        cached_urls.intersection(selected_urls)
+    )
+
+    print(
+        f"Cached comments currently cover "
+        f"{overlap}/{len(selected_urls)} "
+        f"of the newly selected post URLs."
+    )
+
+    if overlap < len(selected_urls):
+        print(
+            "This is expected after changing the classifier/selection. "
+            "No new Apify comment scrape was run because "
+            "USE_CACHED_COMMENTS=True."
+        )
+        print(
+            "When you are ready to collect comments for the new balanced "
+            "selection, set USE_CACHED_COMMENTS=False."
+        )
 
 
 # =========================================================
@@ -969,55 +1572,21 @@ def fetch_facebook_comments(
 # =========================================================
 
 def normalise_facebook_post(post):
-
     return {
-
         "platform": "facebook",
-
-        "post_id": post.get(
-            "postId"
-        ),
-
-        "country": post.get(
-            "country"
-        ),
-
-        "source_name": post.get(
-            "source_name"
-        ),
-
-        "page_name": get_page_name(
-            post
-        ),
-
-        "published_at": post.get(
-            "time"
-        ),
-
-        "url": post.get(
-            "url"
-        ),
-
-        "text": post.get(
-            "text"
-        ),
-
-        "likes": safe_int(
-            post.get("likes")
-        ),
-
+        "post_id": post.get("postId"),
+        "country": post.get("country"),
+        "source_name": post.get("source_name"),
+        "page_name": get_page_name(post),
+        "published_at": post.get("time"),
+        "url": post.get("url"),
+        "text": post.get("text"),
+        "likes": safe_int(post.get("likes")),
         "comments_count": safe_int(
             post.get("comments")
         ),
-
-        "shares": safe_int(
-            post.get("shares")
-        ),
-
-        "primary_topic": post.get(
-            "primary_topic"
-        ),
-
+        "shares": safe_int(post.get("shares")),
+        "primary_topic": post.get("primary_topic"),
         "matched_topics": post.get(
             "matched_topics",
             {}
@@ -1026,43 +1595,20 @@ def normalise_facebook_post(post):
 
 
 def normalise_facebook_comment(comment):
-
     return {
-
         "platform": "facebook",
-
-        "comment_id": comment.get(
-            "commentId"
-        ),
-
+        "comment_id": comment.get("commentId"),
         "parent_post_id": comment.get(
             "parent_post_id"
         ),
-
-        "post_url": comment.get(
-            "facebookUrl"
-        ),
-
-        "country": comment.get(
-            "country"
-        ),
-
-        "source_name": comment.get(
-            "source_name"
-        ),
-
+        "post_url": comment.get("facebookUrl"),
+        "country": comment.get("country"),
+        "source_name": comment.get("source_name"),
         "primary_topic": comment.get(
             "primary_topic"
         ),
-
-        "published_at": comment.get(
-            "date"
-        ),
-
-        "text": comment.get(
-            "text"
-        ),
-
+        "published_at": comment.get("date"),
+        "text": comment.get("text"),
         "likes": safe_int(
             comment.get("likesCount")
         ),
@@ -1079,55 +1625,80 @@ if __name__ == "__main__":
     print("FACEBOOK ENVIRONMENT PIPELINE")
     print("==============================")
 
-
     # =====================================================
-    # STEP 1: COLLECT POSTS
+    # STEP 1: COLLECT / LOAD POSTS
     # =====================================================
 
     if (
         USE_CACHED_POSTS
         and POSTS_CACHE_FILE.exists()
     ):
-
-        print(
-            "\nUsing cached Facebook posts..."
-        )
-
-        posts = load_json(
-            POSTS_CACHE_FILE
-        )
-
+        print("\nUsing cached Facebook posts...")
+        posts = load_json(POSTS_CACHE_FILE)
     else:
-
         posts = fetch_facebook_posts(
             FACEBOOK_SOURCES
         )
+        save_json(posts, POSTS_CACHE_FILE)
 
-        save_json(
-            posts,
-            POSTS_CACHE_FILE
-        )
+    usable_posts = [
+        post
+        for post in posts
+        if post.get("postId")
+    ]
 
+    source_error_records = [
+        post
+        for post in posts
+        if not post.get("postId")
+    ]
 
     print(
-        f"\nRaw posts collected: "
+        f"\nRaw scraper records: "
         f"{len(posts)}"
     )
+    print(
+        f"Usable Facebook posts: "
+        f"{len(usable_posts)}"
+    )
+    print(
+        f"Non-post/error records: "
+        f"{len(source_error_records)}"
+    )
 
+    print_source_coverage(posts)
+    print_source_errors(posts)
 
     # =====================================================
     # STEP 2: CLASSIFY ENVIRONMENTAL POSTS
     # =====================================================
 
-    environmental_posts = (
-        filter_environmental_posts(
-            posts
-        )
-    )
+    (
+        environmental_posts,
+        rejected_posts,
+    ) = split_environmental_posts(posts)
 
     print(
-        f"Environmental posts found: "
+        f"\nEnvironmental posts found: "
         f"{len(environmental_posts)}"
+    )
+
+    if usable_posts:
+        classification_rate = (
+            len(environmental_posts)
+            / len(usable_posts)
+            * 100
+        )
+
+        print(
+            f"Environmental classification rate: "
+            f"{classification_rate:.1f}% "
+            f"of usable posts"
+        )
+
+    print(
+        f"Rejected usable posts: "
+        f"{len(rejected_posts)}"
     )
 
     save_json(
@@ -1135,76 +1706,26 @@ if __name__ == "__main__":
         ENVIRONMENTAL_POSTS_FILE
     )
 
+    save_json(
+        rejected_posts,
+        REJECTED_POSTS_FILE
+    )
 
     # =====================================================
-    # STEP 3: DISPLAY TOPIC DISTRIBUTION
+    # STEP 3: DISTRIBUTIONS
     # =====================================================
 
     print_topic_distribution(
         environmental_posts
     )
 
-
-    # =====================================================
-    # STEP 4: SHOW ENVIRONMENTAL POSTS
-    # =====================================================
-
-    print("\n==============================")
-    print("ENVIRONMENTAL POSTS")
-    print("==============================")
-
-    for i, post in enumerate(
+    print_country_distribution(
         environmental_posts,
-        start=1
-    ):
-
-        print(
-            f"\n--- Environmental Post {i} ---"
-        )
-
-        print(
-            "Country:",
-            post.get("country")
-        )
-
-        print(
-            "Source:",
-            post.get("source_name")
-        )
-
-        print(
-            "Topic:",
-            post.get("primary_topic")
-        )
-
-        print(
-            "Matched topics:",
-            post.get("matched_topics")
-        )
-
-        print(
-            "Comments:",
-            post.get("comments")
-        )
-
-        print(
-            "Likes:",
-            post.get("likes")
-        )
-
-        print(
-            "URL:",
-            post.get("url")
-        )
-
-        print(
-            "Text:",
-            post.get("text")
-        )
-
+        "ENVIRONMENTAL POSTS BY COUNTRY"
+    )
 
     # =====================================================
-    # STEP 5: SELECT DIVERSE POSTS FOR COMMENTS
+    # STEP 4: SELECT BALANCED POSTS FOR COMMENTS
     # =====================================================
 
     selected_posts = (
@@ -1218,158 +1739,141 @@ if __name__ == "__main__":
     print("==============================")
 
     print(
-        f"Selected "
-        f"{len(selected_posts)} "
+        f"Selected {len(selected_posts)} "
         f"post(s)."
     )
 
-    for post in selected_posts:
+    # for post in selected_posts:
+    #     print(
+    #         f"\nCountry: "
+    #         f"{post.get('country')}"
+    #     )
+    #     print(
+    #         f"Topic: "
+    #         f"{post.get('primary_topic')}"
+    #     )
+    #     print(
+    #         f"Source: "
+    #         f"{post.get('source_name')}"
+    #     )
+    #     print(
+    #         f"Facebook comment count: "
+    #         f"{post.get('comments')}"
+    #     )
+    #     print(
+    #         f"URL: "
+    #         f"{post.get('url')}"
+    #     )
 
-        print(
-            f"\nTopic: "
-            f"{post.get('primary_topic')}"
-        )
-
-        print(
-            f"Source: "
-            f"{post.get('source_name')}"
-        )
-
-        print(
-            f"Facebook comment count: "
-            f"{post.get('comments')}"
-        )
-
-        print(
-            f"URL: "
-            f"{post.get('url')}"
-        )
-
+    print_country_distribution(
+        selected_posts,
+        "SELECTED COMMENT POSTS BY COUNTRY"
+    )
 
     # =====================================================
-    # STEP 6: SCRAPE COMMENTS
+    # STEP 5: SCRAPE / LOAD COMMENTS
     # =====================================================
 
     if selected_posts:
-
         if (
             USE_CACHED_COMMENTS
             and COMMENTS_CACHE_FILE.exists()
         ):
-
             print(
-                "\nUsing cached "
-                "Facebook comments..."
+                "\nUsing cached Facebook comments..."
             )
 
             comments = load_json(
                 COMMENTS_CACHE_FILE
             )
 
-        else:
+            # Refresh topic/country metadata using the newly
+            # classified parent posts without calling Apify.
+            comments = refresh_comment_metadata(
+                comments,
+                environmental_posts
+            )
 
-            comments = (
-                fetch_facebook_comments(
-                    selected_posts
-                )
+            print_cached_comment_coverage(
+                comments,
+                selected_posts
+            )
+        else:
+            comments = fetch_facebook_comments(
+                selected_posts
             )
 
             save_json(
                 comments,
                 COMMENTS_CACHE_FILE
             )
-
     else:
-
         comments = []
 
-
     print(
-        f"\nComments collected: "
+        f"\nComments available: "
         f"{len(comments)}"
     )
 
+    comment_country_counts = Counter(
+        comment.get("country") or "Unknown"
+        for comment in comments
+    )
+
+    # if comments:
+    #     print("\n==============================")
+    #     print("COMMENTS BY COUNTRY")
+    #     print("==============================")
+
+    #     for country, count in (
+    #         comment_country_counts.most_common()
+    #     ):
+    #         print(f"{country}: {count}")
 
     # =====================================================
-    # STEP 7: DISPLAY COMMENTS
-    # =====================================================
-
-    for i, comment in enumerate(
-        comments,
-        start=1
-    ):
-
-        print(
-            f"\n--- Comment {i} ---"
-        )
-
-        print(
-            "Country:",
-            comment.get("country")
-        )
-
-        print(
-            "Topic:",
-            comment.get(
-                "primary_topic"
-            )
-        )
-
-        print(
-            "Date:",
-            comment.get("date")
-        )
-
-        print(
-            "Text:",
-            comment.get("text")
-        )
-
-        print(
-            "Likes:",
-            comment.get(
-                "likesCount"
-            )
-        )
-
-        print(
-            "Post URL:",
-            comment.get(
-                "facebookUrl"
-            )
-        )
-
-
-    # =====================================================
-    # STEP 8: NORMALISE DATA
+    # STEP 6: NORMALISE + SAVE
     # =====================================================
 
     normalised_posts = [
-
-        normalise_facebook_post(
-            post
-        )
-
-        for post
-        in environmental_posts
+        normalise_facebook_post(post)
+        for post in environmental_posts
     ]
 
     normalised_comments = [
-
-        normalise_facebook_comment(
-            comment
-        )
-
-        for comment
-        in comments
+        normalise_facebook_comment(comment)
+        for comment in comments
     ]
 
+    save_json(
+        normalised_posts,
+        NORMALISED_POSTS_FILE
+    )
 
     save_json(
         normalised_comments,
         NORMALISED_COMMENTS_FILE
     )
 
+    # =====================================================
+    # STEP 7: SUPABASE SYNC
+    # =====================================================
+
+    if UPLOAD_TO_SUPABASE:
+        print("\n==============================")
+        print("SYNCING TO SUPABASE")
+        print("==============================")
+
+        sync_counts = sync_facebook_rows(
+            normalised_posts,
+            normalised_comments
+        )
+
+        print(
+            "\nSupabase sync completed:",
+            sync_counts
+        )
+    else:
+        print("\nSupabase upload disabled.")
 
     # =====================================================
     # SUMMARY
@@ -1380,22 +1884,27 @@ if __name__ == "__main__":
     print("==============================")
 
     print(
-        "Raw posts:",
+        "Raw scraper records:",
         len(posts)
     )
-
+    print(
+        "Usable posts:",
+        len(usable_posts)
+    )
     print(
         "Environmental posts:",
         len(environmental_posts)
     )
-
+    print(
+        "Rejected usable posts:",
+        len(rejected_posts)
+    )
     print(
         "Posts selected for comments:",
         len(selected_posts)
     )
-
     print(
-        "Comments collected:",
+        "Comments available:",
         len(comments)
     )
 
