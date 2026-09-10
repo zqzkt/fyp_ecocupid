@@ -7,6 +7,7 @@ load_dotenv()
 
 url: str = os.environ.get("SUPABASE_URL", "")
 key: str = os.environ.get("SUPABASE_KEY", "")
+token = os.environ["APIFY_TOKEN"]
 
 supabase: Client = create_client(url, key)
 
