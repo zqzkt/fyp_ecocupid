@@ -160,30 +160,18 @@ FACEBOOK_SOURCES = [
         "source_name": "WWF Thailand",
         "url": "https://www.facebook.com/wwfthailand",
     },
-
-    # Vietnam
+    
+    #Brunei
     {
-        "country": "Vietnam",
-        "source_name": "WWF Vietnam",
-        "url": "https://www.facebook.com/VietnamWWF",
+        "country": "Brunei",
+        "source_name": "Brunei Nature Society",
+        "url": "https://www.facebook.com/BruneiNatureSociety",
     },
     {
-        "country": "Vietnam",
-        "source_name": "GreenHub Vietnam",
-        "url": "https://www.facebook.com/600459996771784",
-    },
-
-    # Myanmar
-    {
-        "country": "Myanmar",
-        "source_name": "Myanmar Climate Change Alliance",
-        "url": "https://www.facebook.com/myanmarccalliance",
-    },
-    {
-        "country": "Myanmar",
-        "source_name": "EHS Myanmar",
-        "url": "https://www.facebook.com/ehsmyanmar",
-    },
+        "country": "Brunei",
+        "source_name": "WWF Brunei",
+        "url": "https://www.facebook.com/WWFBrunei",
+    }
 ]
 
 
