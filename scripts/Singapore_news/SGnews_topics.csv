@@ -1,0 +1,33 @@
+﻿article_id,environment_category,topic_id,topic_name,topic_keywords,article_topic_similarity,country
+A00001,Biodiversity and Conservation,T0004,Creepy Crawlies,"creepy crawlies, botanic gardens, insect",0.9526,Singapore
+A00002,Biodiversity and Conservation,T0008,Southern Islands,"southern islands, reefs, marine habitats",0.9015,Singapore
+A00003,Pollution,T0020,Cleaning,"cleaning, cleanliness, sweepers",0.9487,Singapore
+A00004,Pollution,T0019,Air Quality,"air quality, haze, weather",0.9139,Singapore
+A00005,Climate Change,T0014,Electrification,"electrification, renewable energy, clean energy",0.9427,Singapore
+A00006,Renewable Energy,T0022,Nuclear Power,"nuclear power, renewable energy, powergrid",0.9289,Singapore
+A00007,Pollution,T0019,Air Quality,"air quality, haze, weather",0.8646,"Indonesia, Singapore"
+A00008,Biodiversity and Conservation,T0002,Animal Lodge,"animal lodge, pet breeders, leases",0.9405,Singapore
+A00009,Climate Change,T0017,Mosquito Production Facility,"mosquito production facility, mosquito population, mosquitoes",0.9622,Singapore
+A00010,Climate Change,T0016,Heatwave Response Plan,"heatwave response plan, heat resilience, heat stress",0.9312,Singapore
+A00011,Biodiversity and Conservation,T0003,Animal Shelters,"animal shelters, animal welfare groups, shelter",0.9502,Singapore
+A00012,Climate Change,T0015,Heat Stress,"heat stress, temperatures, workers",0.931,Singapore
+A00014,Pollution,T0019,Air Quality,"air quality, haze, weather",0.8074,Singapore
+A00015,Biodiversity and Conservation,T0008,Southern Islands,"southern islands, reefs, marine habitats",0.9054,Singapore
+A00016,Pollution,T0021,Jurong Island,"jurong island, energy sources, energy infrastructure",0.9611,Singapore
+A00017,Pollution,T0019,Air Quality,"air quality, haze, weather",0.8566,Singapore
+A00018,Biodiversity and Conservation,T0005,Dung Beetles,"dung beetles, catchment nature reserve, wildlife",0.9422,Singapore
+A00019,Sustainable Transport,T0024,Clean Hygiene Council,"clean hygiene council, clean activities, transport",0.9521,Singapore
+A00020,Climate Change,T0018,Natural Gas Power,"natural gas power, power plants, tuas power",0.971,Singapore
+A00021,Climate Change,T0013,Disaster Management,"disaster management, severity natural disasters, disasters know borders",0.9491,Singapore
+A00022,Climate Change,T0012,Coral Reefs,"coral reefs, reef, sea level rise",0.9487,Singapore
+A00023,Waste Management,T0025,Soya Pulp,"soya pulp, plant boosters, products",0.9374,Singapore
+A00024,Biodiversity and Conservation,T0006,Fatal Bird Collisions,"fatal bird collisions, birds, buildings",0.938,Singapore
+A00025,Biodiversity and Conservation,T0007,Hawksbill Turtles,"hawksbill turtles, turtle eggs, hawksbill turtle",0.952,Singapore
+A00026,Pollution,T0019,Air Quality,"air quality, haze, weather",0.8909,Singapore
+A00027,Climate Change,T0010,Alternative Cooling,"alternative cooling, air conditioning, energy use",0.9426,Singapore
+A00028,Biodiversity and Conservation,T0009,Sunda Slow Loris,"sunda slow loris, slow loris rescued, wild slow lorises",0.9557,Singapore
+A00029,Renewable Energy,T0023,Solar Power,"solar power, import electricity, clean energy",0.9366,"Malaysia, Singapore"
+A00030,Climate Change,T0011,Clean Energy,"clean energy, minister, energy security",0.9374,Singapore
+A00031,Waste Management,T0026,Used Bottles Cans,"used bottles cans, nerf gun bullet, litter",0.9603,Singapore
+A00032,Pollution,T0019,Air Quality,"air quality, haze, weather",0.8818,Singapore
+A00033,Biodiversity and Conservation,T0001,Animal Borne Diseases,"animal borne diseases, veterinary, animals",0.9521,Singapore
