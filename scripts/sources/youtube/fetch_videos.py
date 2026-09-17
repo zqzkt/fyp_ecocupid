@@ -1,5 +1,6 @@
 import os
 import json
+import fetch_comments
 import googleapiclient.discovery
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -131,36 +132,6 @@ def fetch_video_stats(youtube, video_ids):
 
     return stats
 
-# def fetch_video_ids(supabase):
-#     """
-#     Fetch all video IDs from Supabase.
-#     """
-
-#     try:
-#         response = (
-#             supabase
-#             .table("youtube_videos")
-#             .select("video_id")
-#             .order("created_at", desc=True)
-#             .range(548, 1548)
-#             .execute()
-#         )
-
-#         video_ids = [
-#             record["video_id"]
-#             for record in response.data
-#         ]
-
-#         # Remove duplicates just in case
-#         video_ids = list(dict.fromkeys(video_ids))
-
-#         print(f"Fetched {len(video_ids)} video IDs from Supabase.")
-
-#         return video_ids
-
-#     except Exception as e:
-#         print(f"Error fetching video IDs: {e}")
-#         return []
     
 def main():
     load_dotenv()
@@ -259,6 +230,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    fetch_comments.main()
 
 
 
