@@ -6,7 +6,7 @@ X pay-per-use (approx.):
   media read $0.005  (media expansions)
 
 Use the newest post stored in Supabase as the daily checkpoint. The default
-collection includes a small reply sample and author expansions.
+collection includes a small reply sample and does not store author profiles.
 """
 
 from __future__ import annotations
@@ -29,11 +29,13 @@ load_dotenv(REPO_ROOT / ".env")
 
 API_BASE = "https://api.x.com/2"
 SEARCH_RECENT = f"{API_BASE}/tweets/search/recent"
+SEARCH_ALL = f"{API_BASE}/tweets/search/all"
 
 POST_READ_USD = 0.005
 USER_READ_USD = 0.010
-DEFAULT_MAX_SPEND_USD = 0.50
-HARD_MAX_POSTS = 50
+DETAIL_POST_READ_USD = 0.005
+DEFAULT_MAX_SPEND_USD = 5.00
+HARD_MAX_POSTS = 250
 
 # One query only. The six primary ASEAN countries are in the same request.
 ASEAN_QUERY_TERMS = (
@@ -43,6 +45,12 @@ ASEAN_QUERY_TERMS = (
 KEYWORD_QUERY = (
     '("climate change" OR sustainability OR "renewable energy" OR "plastic pollution") '
     f"lang:en -is:retweet ({ASEAN_QUERY_TERMS})"
+)
+MATCH_KEYWORDS = (
+    "climate change",
+    "sustainability",
+    "renewable energy",
+    "plastic pollution",
 )
 
 COUNTRY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -101,6 +109,19 @@ def _get(session: requests.Session, url: str, params: dict[str, Any]) -> dict[st
     return response.json()
 
 
+def _fetch_missing_impressions(session: requests.Session, posts: list[dict[str, Any]]) -> None:
+    for post in posts:
+        if post.get("impression_count") is not None or not post.get("post_id"):
+            continue
+        payload = _get(
+            session,
+            f"{API_BASE}/tweets/{post['post_id']}",
+            {"tweet.fields": "public_metrics"},
+        )
+        metrics = (payload.get("data") or {}).get("public_metrics") or {}
+        post["impression_count"] = metrics.get("impression_count")
+
+
 def infer_country(location: str | None, text: str | None, place_country: str | None) -> str | None:
     if place_country:
         mapping = {
@@ -136,6 +157,11 @@ def _entity_tags(entities: dict[str, Any] | None, key: str, field: str) -> list[
     return [item.get(field, "") for item in entities.get(key, []) if item.get(field)]
 
 
+def _matched_keywords(text: str | None) -> list[str]:
+    normalized = (text or "").casefold()
+    return [keyword for keyword in MATCH_KEYWORDS if keyword in normalized]
+
+
 def flatten_post(
     tweet: dict[str, Any],
     users_by_id: dict[str, dict[str, Any]],
@@ -169,6 +195,8 @@ def flatten_post(
         "reply_count": reply_count,
         "repost_count": repost_count,
         "quote_count": quote_count,
+        "impression_count": metrics.get("impression_count"),
+        "matched_keywords": _matched_keywords(tweet.get("text")),
         "hashtags": _entity_tags(entities, "hashtags", "tag"),
         "mentions": _entity_tags(entities, "mentions", "username"),
         "urls": _entity_tags(entities, "urls", "expanded_url") or _entity_tags(entities, "urls", "url"),
@@ -214,6 +242,9 @@ def search_pages(
     is_reply: bool,
     include_users: bool,
     since_id: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    search_url: str = SEARCH_RECENT,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     posts: list[dict[str, Any]] = []
     users_out: dict[str, dict[str, Any]] = {}
@@ -231,10 +262,22 @@ def search_pages(
             params["user.fields"] = USER_FIELDS
         if since_id:
             params["since_id"] = since_id
+        if start_time:
+            params["start_time"] = start_time
+        if end_time:
+            params["end_time"] = end_time
         if next_token:
             params["next_token"] = next_token
 
-        payload = _get(session, SEARCH_RECENT, params)
+        try:
+            payload = _get(session, search_url, params)
+        except requests.HTTPError as error:
+            response = error.response
+            if not since_id or response is None or response.status_code != 400 or "since_id" not in response.text:
+                raise
+            print("Supabase checkpoint is outside X's recent-search window; retrying without since_id.")
+            params.pop("since_id", None)
+            payload = _get(session, search_url, params)
         includes = payload.get("includes") or {}
         users_by_id = {u["id"]: u for u in includes.get("users", []) if "id" in u}
         if include_users:
@@ -264,6 +307,9 @@ def collect_replies(
     max_replies_per_post: int,
     collected_at: str,
     include_users: bool,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    search_url: str = SEARCH_RECENT,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     candidates = [p for p in seed_posts if (p.get("reply_count") or 0) > 0 and p.get("conversation_id")]
     candidates.sort(key=lambda p: (p.get("reply_count") or 0, p.get("total_engagement") or 0), reverse=True)
@@ -277,7 +323,15 @@ def collect_replies(
         cid = post["conversation_id"]
         query = f"conversation_id:{cid} is:reply lang:en"
         page, page_users = search_pages(
-            session, query, max_replies_per_post, collected_at, True, include_users
+            session,
+            query,
+            max_replies_per_post,
+            collected_at,
+            True,
+            include_users,
+            start_time=start_time,
+            end_time=end_time,
+            search_url=search_url,
         )
         users.update(page_users)
         for reply in page:
@@ -325,7 +379,7 @@ def summarize(posts: list[dict[str, Any]], replies: list[dict[str, Any]], users:
 def estimate_cost_usd(max_posts: int, include_users: bool, with_replies: bool, reply_budget: int) -> float:
     posts = max_posts + (reply_budget if with_replies else 0)
     users = posts if include_users else 0
-    return round(posts * POST_READ_USD + users * USER_READ_USD, 4)
+    return round(posts * (POST_READ_USD + DETAIL_POST_READ_USD) + users * USER_READ_USD, 4)
 
 
 def _sync_supabase(
@@ -345,7 +399,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Collect EcoInsights X data and upsert it directly into Supabase."
     )
-    parser.add_argument("--max-posts", type=int, default=20, help="New posts to fetch. Min billed page is 10.")
+    parser.add_argument("--max-posts", type=int, default=40, help="New posts to fetch. Min billed page is 10.")
     parser.add_argument("--max-spend", type=float, default=DEFAULT_MAX_SPEND_USD, help="Abort if estimate exceeds this USD.")
     parser.add_argument(
         "--with-replies",
@@ -356,24 +410,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--with-users",
         action="store_true",
-        default=True,
-        help="Collect author expansions (enabled by default; billed extra).",
+        default=False,
+        help="Deprecated compatibility option; user rows are no longer stored.",
     )
     parser.add_argument("--no-replies", dest="with_replies", action="store_false", help="Skip reply collection.")
     parser.add_argument("--no-users", dest="with_users", action="store_false", help="Skip author expansions.")
     parser.add_argument(
         "--max-reply-conversations",
         type=int,
-        default=2,
+        default=5,
         help="Conversations to sample for replies; highest reply counts are selected.",
     )
     parser.add_argument(
         "--max-replies-per-post",
         type=int,
-        default=5,
+        default=10,
         help="Maximum replies to fetch per selected conversation.",
     )
     parser.add_argument("--force", action="store_true", help="Ignore the Supabase checkpoint and search recent posts again.")
+    parser.add_argument("--start-time", help="Inclusive UTC ISO-8601 start time for a bounded archive search.")
+    parser.add_argument("--end-time", help="Exclusive UTC ISO-8601 end time for a bounded archive search.")
+    parser.add_argument("--archive", action="store_true", help="Use X full-archive search instead of recent search.")
     parser.add_argument("--dry-run", action="store_true", help="Print cost estimate only. No API call.")
     return parser.parse_args()
 
@@ -406,7 +463,7 @@ def main() -> None:
         sys.path.insert(0, str(REPO_ROOT))
     from supabase.twitter_pipeline import latest_post_id
 
-    since_id = None if args.force else latest_post_id()
+    since_id = None if args.force or args.archive else latest_post_id()
     if since_id:
         print(f"Searching for posts newer than Supabase checkpoint {since_id}...")
     else:
@@ -416,9 +473,19 @@ def main() -> None:
     collected_at = datetime.now(timezone.utc).isoformat()
     print(f"Searching (up to {args.max_posts} new posts), single query...")
     seed_posts, all_users = search_pages(
-        session, KEYWORD_QUERY, args.max_posts, collected_at, False, args.with_users, since_id
+        session,
+        KEYWORD_QUERY,
+        args.max_posts,
+        collected_at,
+        False,
+        args.with_users,
+        since_id,
+        args.start_time,
+        args.end_time,
+        SEARCH_ALL if args.archive else SEARCH_RECENT,
     )
     seed_posts = [p for p in dedupe_posts(seed_posts) if not p.get("is_reply")]
+    _fetch_missing_impressions(session, seed_posts)
 
     reply_rows: list[dict[str, Any]] = []
     if args.with_replies:
@@ -429,6 +496,9 @@ def main() -> None:
             args.max_replies_per_post,
             collected_at,
             args.with_users,
+            args.start_time,
+            args.end_time,
+            SEARCH_ALL if args.archive else SEARCH_RECENT,
         )
         all_users.update(reply_users)
         for reply in replies:

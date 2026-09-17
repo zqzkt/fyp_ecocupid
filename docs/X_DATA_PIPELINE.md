@@ -20,16 +20,17 @@ The geographic scope is limited to six primary ASEAN countries:
 5. Brunei
 6. Thailand
 
-The collection is designed to run once per day without keeping a local `data/` folder.
+The collection supports daily recent searches and a larger monthly full-archive run
+without keeping a local `data/` folder.
 
 ## Main Components
 
 | Component | Responsibility |
 | --- | --- |
 | `scripts/sources/twitter.py` | Calls the X API, transforms posts/users/replies, estimates cost, and starts the Supabase upload. |
-| `supabase/twitter_pipeline.py` | Reads Supabase credentials, finds the latest stored post, normalizes rows, and upserts batches. |
+| `supabase/twitter_pipeline.py` | Reads Supabase credentials, provides monthly scheduling, normalizes rows, and upserts batches. |
 | `supabase/__init__.py` | Makes the local Supabase integration importable as a Python package. |
-| Supabase tables | Permanently store users, posts, and replies. |
+| Supabase tables | Permanently store posts and replies. |
 
 ## Daily Data Flow
 
@@ -50,9 +51,6 @@ Select high-discussion conversations
     |
     v
 Fetch a small sample of replies
-    |
-    v
-Collect author expansions for posts and replies
     |
     v
 Normalize rows in memory
@@ -137,13 +135,13 @@ The default settings are intentionally moderate:
 
 | Setting | Default |
 | --- | ---: |
-| New seed posts | 20 |
-| Reply conversations | 2 |
-| Replies per conversation | 5 |
+| New seed posts | 40 |
+| Reply conversations | 5 |
+| Replies per conversation | 10 |
 | Maximum seed posts hard cap | 50 |
-| User expansions | Enabled |
+| User expansions | Disabled; `x_users` is not written |
 | Reply collection | Enabled |
-| Default estimated spend limit | `$0.50` |
+| Default estimated spend limit | `$2.00` |
 
 The reply conversations are selected from seed posts with the highest reply counts, using engagement as a tie-breaker. This prioritizes conversations likely to provide more sentiment-rich discussion.
 
@@ -154,23 +152,23 @@ The script estimates cost before calling the X API.
 Approximate configured rates:
 
 - Post read: `$0.005`
-- User read: `$0.010`
+- User read: not used by the default collector
 - Media reads: not requested by the current collector
 
 The estimate is conservative:
 
 ```text
 post reads = seed posts + reply budget
-user reads = post reads, when user expansions are enabled
-estimated cost = post reads * $0.005 + user reads * $0.010
+detail reads = one individual lookup per post for missing impressions
+estimated cost = post reads * $0.005 + detail reads * $0.005
 ```
 
 With the defaults:
 
 ```text
-20 seed posts + (2 conversations * 5 replies) = 30 post reads
-30 post reads + 30 user reads
-(30 * $0.005) + (30 * $0.010) = $0.45
+40 seed posts + (5 conversations * 10 replies) = 90 post reads
+90 post reads + 90 detail reads
+(90 * $0.005) + (90 * $0.005) = $0.90
 ```
 
 The script refuses to call the API if the estimate exceeds `--max-spend`.
@@ -185,29 +183,11 @@ The dry run prints the estimated maximum cost and makes no API request.
 
 ## 6. User Collection
 
-User expansions are enabled by default through:
-
-```text
-expansions=author_id
-user.fields=id,username,name,description,location,created_at,public_metrics
-```
-
-For each included user, the collector stores:
-
-- X author ID
-- Username
-- Display name
-- Description
-- Location
-- Account creation time
-- Followers
-- Following count
-- Tweet count
-- List count
-- Inferred country
-- Collection timestamp
-
-Users from both seed posts and replies are included. The in-memory user dictionary is keyed by `author_id`, so the same author is only prepared once per run.
+User expansions are disabled. The collector does not request author profiles and
+does not write to `x_users`. Country inference uses post text and country data
+directly available in the post response. The existing `--with-users` option is
+kept only for compatibility and should not be used because user rows are still
+ignored by the Supabase sync.
 
 ## 7. Reply Collection
 
@@ -224,7 +204,7 @@ The collector then:
 3. Selects the top configured number of conversations.
 4. Fetches up to the configured reply limit for each conversation.
 5. Links each reply to its source post and parent tweet when available.
-6. Collects author expansions for reply authors.
+6. Stores reply authors only as `author_id` values on reply rows.
 
 The current reply sample is deliberately limited because each reply search consumes additional reads.
 
@@ -243,6 +223,8 @@ Posts include fields such as:
 - `lang`
 - `created_at`
 - Like, reply, repost, and quote counts
+- `impression_count`: impressions reported by Twitter/X in `public_metrics`
+- `matched_keywords`: environmental query phrases found in the post text
 - Hashtags, mentions, and URLs
 - Media keys
 - Referenced tweets
@@ -295,13 +277,32 @@ Replies include:
 
 Replies are stored in `x_replies`, not mixed into the normal `x_posts` table.
 
+### Analysis columns
+
+The `x_posts` table includes these analysis-oriented columns:
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `impression_count` | `bigint` | Twitter/X's public impression count for the post, when returned by the API. |
+| `matched_keywords` | `text[]` | The environmental query phrases matched in the post text. |
+
+The current keyword vocabulary is:
+
+- `climate change`
+- `sustainability`
+- `renewable energy`
+- `plastic pollution`
+
+Country terms are not placed in `matched_keywords`; country classification is stored separately in `inferred_country`.
+
+Before collecting new data, run [supabase/migrations/003_add_x_post_analysis_columns.sql](../supabase/migrations/003_add_x_post_analysis_columns.sql) once in the Supabase SQL Editor. The migration is idempotent and will not recreate columns that already exist.
+
 ## 9. Supabase Storage
 
 The direct collection path uploads three types of rows:
 
 | Supabase table | Primary identifier | Contents |
 | --- | --- | --- |
-| `x_users` | `author_id` | Author profiles and public metrics |
 | `x_posts` | `post_id` | Seed posts returned by the topic/country query |
 | `x_replies` | `reply_id` | Replies sampled from selected conversations |
 
@@ -326,7 +327,7 @@ During a run:
 
 - Seed posts are deduplicated by `post_id`.
 - Reply IDs already seen in the seed set or earlier reply results are skipped.
-- Included users are stored in dictionaries keyed by `author_id`.
+- User profiles are not collected or stored by the current pipeline.
 
 ### Supabase upserts
 
@@ -338,7 +339,6 @@ resolution=merge-duplicates
 
 The conflict identifiers are:
 
-- `x_users.author_id`
 - `x_posts.post_id`
 - `x_replies.reply_id`
 
@@ -360,13 +360,46 @@ This performs the following sequence:
 2. Read the latest post checkpoint from Supabase.
 3. Search only for newer posts.
 4. Fetch the configured reply sample.
-5. Collect user expansions.
-6. Upsert users, posts, and replies into Supabase.
+5. Upsert posts and replies into Supabase.
 7. Exit without creating local data files.
 
 This command is suitable for a daily scheduler such as `cron`, GitHub Actions, or another job runner.
 
-## 12. Useful Commands
+## 12. Monthly Job
+
+Run the monthly job through the Supabase pipeline on the first day of each month:
+
+```bash
+python supabase/twitter_pipeline.py --monthly
+```
+
+The job:
+
+1. Checks that today is the first day of the month.
+2. Calculates the previous calendar month in UTC.
+3. Uses X full-archive search with `start_time` and `end_time` for that month.
+4. Collects up to 200 seed posts.
+5. Samples up to 10 replies from each of the top 5 conversations.
+6. Fetches missing impression counts through individual tweet lookups.
+7. Uploads users, posts, and replies directly to Supabase.
+
+The monthly run has a `$5.00` maximum estimate. With user expansions disabled, its configured maximum is 250 post/detail reads, costing `$2.50` at the current rates. This is a large bounded monthly sample, not an unlimited export: obtaining every post from a busy month would require a larger budget and may require X full-archive access.
+
+On any day other than the first, the job exits without calling X:
+
+```text
+Monthly job skipped: it only runs on the first day of the month.
+```
+
+For a deliberate one-off run outside the first day, use the explicit override:
+
+```bash
+python supabase/twitter_pipeline.py --monthly --run-now
+```
+
+X full-archive access is required for the monthly command. If the account does not have that access, X may return `403` even though the daily recent-search command works.
+
+## 13. Useful Commands
 
 Preview cost without calling the API:
 
@@ -392,7 +425,7 @@ Collect without replies or users for troubleshooting:
 python scripts/sources/twitter.py --no-replies --no-users
 ```
 
-## 13. Failure Behavior
+## 14. Failure Behavior
 
 The collector stops without retrying when X returns:
 
@@ -405,7 +438,7 @@ This avoids automatic retries that could create unexpected billed reads.
 
 Supabase upload failures also stop the job. The data remains in Supabase for batches that completed before the failure, and rerunning the normal command is safe because IDs are upsert keys.
 
-## 14. Analysis Considerations
+## 15. Analysis Considerations
 
 The stored sample is suitable for later sentiment analysis, but the following limitations should be considered:
 
@@ -419,7 +452,7 @@ The stored sample is suitable for later sentiment analysis, but the following li
 
 For more accurate findings, report the collection window, sample sizes, country coverage, number of unspecified records, and reply-selection method alongside sentiment results.
 
-## 15. Current Architecture Summary
+## 16. Current Architecture Summary
 
 The permanent source of truth is Supabase. The daily job does not need the removed `data/` folder, JSON files, or JSONL files.
 

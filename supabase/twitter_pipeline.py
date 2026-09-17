@@ -1,10 +1,12 @@
-"""Upsert collected X JSONL into Supabase (x_users, x_posts, x_replies)."""
+"""Upsert collected X posts and replies into Supabase."""
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,10 @@ load_dotenv(REPO_ROOT / ".env")
 
 DEFAULT_X_DIR = REPO_ROOT / "data" / "raw" / "x"
 BATCH_SIZE = 100
+MONTHLY_MAX_SPEND_USD = 5.00
+MONTHLY_MAX_POSTS = 200
+MONTHLY_REPLY_CONVERSATIONS = 5
+MONTHLY_REPLIES_PER_CONVERSATION = 10
 
 USER_COLUMNS = (
     "author_id",
@@ -44,6 +50,7 @@ POST_COLUMNS = (
     "quote_count",
     "bookmark_count",
     "impression_count",
+    "matched_keywords",
     "total_engagement",
     "discussion_ratio",
     "amplification_ratio",
@@ -191,12 +198,11 @@ def sync_x_jsonl(out_dir: Path | None = None) -> dict[str, int]:
     base_url, key = _credentials()
     session = requests.Session()
 
-    users = [r for r in (project(row, USER_COLUMNS, "author_id") for row in read_jsonl(out_dir / "x_users.jsonl")) if r]
     posts = [r for r in (project(row, POST_COLUMNS, "post_id") for row in read_jsonl(out_dir / "x_posts.jsonl")) if r]
     replies = [r for r in (project(row, REPLY_COLUMNS, "reply_id") for row in read_jsonl(out_dir / "x_replies.jsonl")) if r]
 
     counts = {
-        "x_users": upsert_batches(session, base_url, key, "x_users", users, "author_id"),
+        "x_users": 0,
         "x_posts": upsert_batches(session, base_url, key, "x_posts", posts, "post_id"),
         "x_replies": upsert_batches(session, base_url, key, "x_replies", replies, "reply_id"),
     }
@@ -235,11 +241,10 @@ def sync_x_rows(
     """Project and upsert freshly collected X rows without local staging files."""
     base_url, key = _credentials()
     session = requests.Session()
-    projected_users = [r for r in (project(row, USER_COLUMNS, "author_id") for row in users) if r]
     projected_posts = [r for r in (project(row, POST_COLUMNS, "post_id") for row in posts) if r]
     projected_replies = [r for r in (project(row, REPLY_COLUMNS, "reply_id") for row in replies) if r]
     counts = {
-        "x_users": upsert_batches(session, base_url, key, "x_users", projected_users, "author_id"),
+        "x_users": 0,
         "x_posts": upsert_batches(session, base_url, key, "x_posts", projected_posts, "post_id"),
         "x_replies": upsert_batches(session, base_url, key, "x_replies", projected_replies, "reply_id"),
     }
@@ -247,6 +252,52 @@ def sync_x_rows(
     return counts
 
 
+def previous_month_window(reference: datetime | None = None) -> tuple[str, str]:
+    """Return the previous calendar month as UTC ISO-8601 bounds."""
+    current = reference or datetime.now(timezone.utc)
+    first_current = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    previous_end = first_current
+    previous_start = (first_current - timedelta(days=1)).replace(day=1)
+    return previous_start.isoformat().replace("+00:00", "Z"), previous_end.isoformat().replace("+00:00", "Z")
+
+
+def run_monthly_job(reference: datetime | None = None, *, ignore_day_guard: bool = False) -> None:
+    """Collect the previous calendar month on the first day of the month."""
+    current = reference or datetime.now(timezone.utc)
+    if current.day != 1 and not ignore_day_guard:
+        raise SystemExit("Monthly job skipped: it only runs on the first day of the month.")
+    start_time, end_time = previous_month_window(current)
+    collector = REPO_ROOT / "scripts" / "sources" / "twitter.py"
+    command = [
+        sys.executable,
+        str(collector),
+        "--archive",
+        "--start-time",
+        start_time,
+        "--end-time",
+        end_time,
+        "--max-posts",
+        str(MONTHLY_MAX_POSTS),
+        "--max-spend",
+        str(MONTHLY_MAX_SPEND_USD),
+        "--max-reply-conversations",
+        str(MONTHLY_REPLY_CONVERSATIONS),
+        "--max-replies-per-post",
+        str(MONTHLY_REPLIES_PER_CONVERSATION),
+    ]
+    print(f"Running monthly X collection for {start_time} through {end_time}...")
+    try:
+        subprocess.run(command, cwd=REPO_ROOT, check=True)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Monthly X collection failed with exit code {error.returncode}; "
+            "no monthly rows were uploaded by this run."
+        ) from error
+
+
 if __name__ == "__main__":
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_X_DIR
-    sync_x_jsonl(target)
+    if "--monthly" in sys.argv[1:]:
+        run_monthly_job(ignore_day_guard="--run-now" in sys.argv[1:])
+    else:
+        target = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_X_DIR
+        sync_x_jsonl(target)
