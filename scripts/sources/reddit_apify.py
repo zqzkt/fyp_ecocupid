@@ -25,15 +25,15 @@ topics = [
 ]
 
 countries = [
-    "Singapore",
+    # "Singapore",
     # "Malaysia",
-    # "Indonesia",
+    "Indonesia",
     # "Philippines",
     # "Brunei",
     # "Thailand"
 ]
 
-MAX_POSTS = 3
+MAX_POSTS = 2
 MAX_COMMENTS = 2
 
 # =====================================================
@@ -313,7 +313,7 @@ def _sync_supabase(posts: list[dict], comments: list[dict]) -> None:
             print("✗ Missing SUPABASE_URL or SUPABASE_KEY in .env")
             return
         
-        from supabase.reddit_pipeline import sync_reddit_data
+        from scripts.supabase.reddit_pipeline import sync_reddit_data
         print("Syncing to Supabase...")
         # Convert NaN to None for JSON serialization
         posts_dict = pd.DataFrame(posts).where(pd.notna(pd.DataFrame(posts)), None).to_dict('records')
