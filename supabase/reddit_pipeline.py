@@ -30,6 +30,8 @@ POST_COLUMNS = (
     "score",
     "upvote_ratio",
     "domain",
+    "topic",
+    "country",
 )
 
 COMMENT_COLUMNS = (
@@ -45,6 +47,8 @@ COMMENT_COLUMNS = (
     "score",
     "parent_kind",
     "depth",
+    "topic",
+    "country",
 )
 
 
