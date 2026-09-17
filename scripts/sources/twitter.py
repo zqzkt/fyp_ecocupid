@@ -389,7 +389,7 @@ def _sync_supabase(
 ) -> None:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    from supabase.twitter_pipeline import sync_x_rows
+    from scripts.supabase.twitter_pipeline import sync_x_rows
 
     print("Upserting fresh rows into Supabase...")
     sync_x_rows(users, posts, replies)
@@ -461,7 +461,7 @@ def main() -> None:
 
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    from supabase.twitter_pipeline import latest_post_id
+    from scripts.supabase.twitter_pipeline import latest_post_id
 
     since_id = None if args.force or args.archive else latest_post_id()
     if since_id:
