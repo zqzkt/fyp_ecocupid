@@ -132,15 +132,6 @@ def infer_country(location: str | None, text: str | None, place_country: str | N
             "Thailand": "Thailand",
             "Brunei Darussalam": "Brunei",
             "Brunei": "Brunei",
-            "Cambodia": "Cambodia",
-            "Lao People's Democratic Republic": "Laos",
-            "Laos": "Laos",
-            "Myanmar": "Myanmar",
-            "Burma": "Myanmar",
-            "Viet Nam": "Vietnam",
-            "Vietnam": "Vietnam",
-            "Timor-Leste": "Timor-Leste",
-            "East Timor": "Timor-Leste",
         }
         if place_country in mapping:
             return mapping[place_country]

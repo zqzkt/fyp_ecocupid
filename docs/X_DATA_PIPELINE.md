@@ -399,6 +399,29 @@ python scripts/supabase/twitter_pipeline.py --monthly --run-now
 
 X full-archive access is required for the monthly command. If the account does not have that access, X may return `403` even though the daily recent-search command works.
 
+### macOS automatic scheduling
+
+The repository includes [scripts/supabase/com.ecocupid.monthly.plist](../scripts/supabase/com.ecocupid.monthly.plist), which runs the monthly command automatically at 02:00 on day 1 of every month through macOS `launchd`.
+
+Install it for the current macOS user:
+
+```bash
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+cp scripts/supabase/com.ecocupid.monthly.plist "$HOME/Library/LaunchAgents/com.ecocupid.monthly.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.ecocupid.monthly.plist"
+```
+
+Check its registration:
+
+```bash
+launchctl print "gui/$(id -u)/com.ecocupid.monthly"
+```
+
+Logs are written to:
+
+- `~/Library/Logs/ecocupid-monthly.log`
+- `~/Library/Logs/ecocupid-monthly.error.log`
+
 ## 13. Useful Commands
 
 Preview cost without calling the API:
