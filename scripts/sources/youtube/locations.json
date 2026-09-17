@@ -1,30 +1,36 @@
 {
   "SG": {
+    "keywords": ["Environment", "Climate Change", "Global Warming"],
     "regionCode": "SG",
     "location": "1.290270,103.851959",
     "locationRadius": "26km"
   },
   "MY": {
+    "keywords": ["Environment", "Climate Change", "Global Warming"],
     "regionCode": "MY",
     "location": "3.139003,101.686855",
     "locationRadius": "350km"
   },
   "ID": {
+    "keywords": ["Environment", "Climate Change", "Global Warming"],
     "regionCode": "ID",
     "location": "-6.208800,106.845600",
     "locationRadius": "500km"
   },
   "PH": {
+    "keywords": ["Environment", "Climate Change", "Global Warming"],
     "regionCode": "PH",
     "location": "14.599512,120.984222",
     "locationRadius": "450km"
   },
   "BN": {
+    "keywords": ["Environment", "Climate Change", "Global Warming"],
     "regionCode": "BN",
     "location": "4.535277,114.727669",
     "locationRadius": "60km"
   },
   "TH": {
+    "keywords": ["Environment", "Climate Change", "Global Warming"],
     "regionCode": "TH",
     "location": "13.756331,100.501765",
     "locationRadius": "450km"
