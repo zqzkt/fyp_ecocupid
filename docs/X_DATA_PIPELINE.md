@@ -28,8 +28,8 @@ without keeping a local `data/` folder.
 | Component | Responsibility |
 | --- | --- |
 | `scripts/sources/twitter.py` | Calls the X API, transforms posts/users/replies, estimates cost, and starts the Supabase upload. |
-| `supabase/twitter_pipeline.py` | Reads Supabase credentials, provides monthly scheduling, normalizes rows, and upserts batches. |
-| `supabase/__init__.py` | Makes the local Supabase integration importable as a Python package. |
+| `scripts/supabase/twitter_pipeline.py` | Reads Supabase credentials, provides monthly scheduling, normalizes rows, and upserts batches. |
+| `scripts/supabase/__init__.py` | Makes the local Supabase integration importable as a Python package. |
 | Supabase tables | Permanently store posts and replies. |
 
 ## Daily Data Flow
@@ -370,7 +370,7 @@ This command is suitable for a daily scheduler such as `cron`, GitHub Actions, o
 Run the monthly job through the Supabase pipeline on the first day of each month:
 
 ```bash
-python supabase/twitter_pipeline.py --monthly
+python scripts/supabase/twitter_pipeline.py --monthly
 ```
 
 The job:
@@ -394,10 +394,33 @@ Monthly job skipped: it only runs on the first day of the month.
 For a deliberate one-off run outside the first day, use the explicit override:
 
 ```bash
-python supabase/twitter_pipeline.py --monthly --run-now
+python scripts/supabase/twitter_pipeline.py --monthly --run-now
 ```
 
 X full-archive access is required for the monthly command. If the account does not have that access, X may return `403` even though the daily recent-search command works.
+
+### macOS automatic scheduling
+
+The repository includes [scripts/supabase/com.ecocupid.monthly.plist](../scripts/supabase/com.ecocupid.monthly.plist), which runs the monthly command automatically at 02:00 on day 1 of every month through macOS `launchd`.
+
+Install it for the current macOS user:
+
+```bash
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+cp scripts/supabase/com.ecocupid.monthly.plist "$HOME/Library/LaunchAgents/com.ecocupid.monthly.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.ecocupid.monthly.plist"
+```
+
+Check its registration:
+
+```bash
+launchctl print "gui/$(id -u)/com.ecocupid.monthly"
+```
+
+Logs are written to:
+
+- `~/Library/Logs/ecocupid-monthly.log`
+- `~/Library/Logs/ecocupid-monthly.error.log`
 
 ## 13. Useful Commands
 
