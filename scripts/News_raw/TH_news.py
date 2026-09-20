@@ -9,6 +9,9 @@ import json
 from datetime import datetime
 from urllib.parse import urljoin, urlparse, urlunparse
 
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
 
 # ==========================================================
 # SETTINGS
@@ -28,6 +31,7 @@ ARCHIVE_URL = (
 # ----------------------------------------------------------
 # Historical date range
 # ----------------------------------------------------------
+
 START_DATE = os.getenv(
     "NEWS_START_DATE",
     "2026-08-01"
@@ -35,7 +39,7 @@ START_DATE = os.getenv(
 
 END_DATE = os.getenv(
     "NEWS_END_DATE",
-    "2026-08-30"
+    "2026-08-31"
 )
 
 START_DATE = datetime.strptime(
@@ -50,19 +54,36 @@ END_DATE = datetime.strptime(
 
 
 # ----------------------------------------------------------
-# Output
+# Supabase
 # ----------------------------------------------------------
 
-SCRIPT_DIR = os.path.dirname(
-    os.path.abspath(__file__)
+load_dotenv()
+
+SUPABASE_URL = os.getenv(
+    "SUPABASE_URL"
 )
 
-OUTPUT_FILE = os.path.join(
-    SCRIPT_DIR,
-    "thaipbs_environment.csv"
+SUPABASE_KEY = os.getenv(
+    "SUPABASE_KEY"
 )
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError(
+        "Missing SUPABASE_URL or SUPABASE_KEY in .env"
+    )
+
+supabase: Client = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
+
+RAW_TABLE = "news_raw"
+
+SOURCE_COUNTRY = "Thailand"
 
 MAX_PAGES = 20
+
+INSERT_BATCH_SIZE = 100
 
 
 # ==========================================================
@@ -86,7 +107,6 @@ HEADERS = {
     "Connection": "keep-alive"
 }
 
-
 session = requests.Session()
 session.headers.update(HEADERS)
 
@@ -96,8 +116,8 @@ session.headers.update(HEADERS)
 #
 # Metadata only.
 #
-# An article is NOT removed if no keyword is found because
-# it already comes from Thai PBS's Environment category.
+# Articles are NOT removed if no keyword is found because
+# they already come from Thai PBS's Environment category.
 # ==========================================================
 
 ENVIRONMENT_KEYWORDS = [
@@ -196,7 +216,7 @@ ENVIRONMENT_KEYWORDS = [
     "กัดเซาะชายฝั่ง",
 
     # ------------------------------------------------------
-    # English — sometimes appears within Thai articles
+    # English - sometimes appears in Thai articles
     # ------------------------------------------------------
 
     "environment",
@@ -228,25 +248,19 @@ ENVIRONMENT_KEYWORDS = [
 
 
 # ==========================================================
-# ASEAN COUNTRY KEYWORDS
+# TARGET COUNTRY KEYWORDS
 #
-# Country detection is METADATA ONLY.
+# ONLY the six countries included in this project:
 #
+# - Singapore
+# - Malaysia
+# - Indonesia
+# - Thailand
+# - Philippines
+# - Brunei
+#
+# Country detection is metadata only.
 # Articles are NOT filtered based on country.
-#
-# Examples:
-#
-# Thailand article
-#     -> Thailand
-#
-# Thailand-Myanmar pollution article
-#     -> Thailand, Myanmar
-#
-# Indonesia forest fire article
-#     -> Indonesia
-#
-# Global article with no ASEAN country
-#     -> blank
 # ==========================================================
 
 ASEAN_COUNTRY_KEYWORDS = {
@@ -254,18 +268,12 @@ ASEAN_COUNTRY_KEYWORDS = {
     "Brunei": [
         "brunei",
         "bruneian",
+        "brunei darussalam",
+        "bandar seri begawan",
+
         "บรูไน",
         "บรูไนดารุสซาลาม",
         "บันดาร์เสรีเบกาวัน"
-    ],
-
-    "Cambodia": [
-        "cambodia",
-        "cambodian",
-        "phnom penh",
-        "กัมพูชา",
-        "เขมร",
-        "พนมเปญ"
     ],
 
     "Indonesia": [
@@ -276,24 +284,15 @@ ASEAN_COUNTRY_KEYWORDS = {
         "kalimantan",
         "java",
         "bali",
+        "sulawesi",
 
         "อินโดนีเซีย",
         "จาการ์ตา",
         "สุมาตรา",
         "กาลิมันตัน",
         "ชวา",
-        "บาหลี"
-    ],
-
-    "Laos": [
-        "laos",
-        "lao",
-        "vientiane",
-
-        "ลาว",
-        "สปป.ลาว",
-        "สปป. ลาว",
-        "เวียงจันทน์"
+        "บาหลี",
+        "สุลาเวสี"
     ],
 
     "Malaysia": [
@@ -303,26 +302,14 @@ ASEAN_COUNTRY_KEYWORDS = {
         "sarawak",
         "sabah",
         "johor",
+        "penang",
 
         "มาเลเซีย",
         "กัวลาลัมเปอร์",
         "ซาราวัก",
         "ซาบาห์",
-        "ยะโฮร์"
-    ],
-
-    "Myanmar": [
-        "myanmar",
-        "burma",
-        "burmese",
-        "yangon",
-        "mandalay",
-
-        "เมียนมา",
-        "เมียนมาร์",
-        "พม่า",
-        "ย่างกุ้ง",
-        "มัณฑะเลย์"
+        "ยะโฮร์",
+        "ปีนัง"
     ],
 
     "Philippines": [
@@ -330,9 +317,15 @@ ASEAN_COUNTRY_KEYWORDS = {
         "philippine",
         "filipino",
         "manila",
+        "luzon",
+        "visayas",
+        "mindanao",
 
         "ฟิลิปปินส์",
-        "มะนิลา"
+        "มะนิลา",
+        "ลูซอน",
+        "วิซายัส",
+        "มินดาเนา"
     ],
 
     "Singapore": [
@@ -352,17 +345,6 @@ ASEAN_COUNTRY_KEYWORDS = {
         "กรุงเทพ",
         "กรุงเทพฯ",
         "กรุงเทพมหานคร"
-    ],
-
-    "Vietnam": [
-        "vietnam",
-        "vietnamese",
-        "hanoi",
-        "ho chi minh",
-
-        "เวียดนาม",
-        "ฮานอย",
-        "โฮจิมินห์"
     ]
 }
 
@@ -431,10 +413,6 @@ def clean_url(url):
 
 # ==========================================================
 # VALID ARTICLE URL
-#
-# Thai PBS article example:
-#
-# https://www.thaipbs.or.th/news/content/509137
 # ==========================================================
 
 def is_article_url(url):
@@ -461,7 +439,6 @@ def extract_article_urls(html):
     )
 
     article_urls = []
-
 
     for link in soup.find_all(
         "a",
@@ -490,21 +467,11 @@ def extract_article_urls(html):
                 full_url
             )
 
-
     return article_urls
 
 
 # ==========================================================
 # CATEGORY / ARCHIVE PAGE
-#
-# Page 1:
-#
-# https://www.thaipbs.or.th/news/categories/environment
-#
-# Page 2 onward:
-#
-# https://www.thaipbs.or.th/news/categories/environment/
-# archive?page=2
 # ==========================================================
 
 def get_environment_page(page_number):
@@ -512,7 +479,6 @@ def get_environment_page(page_number):
     if page_number == 1:
 
         url = CATEGORY_URL
-
         params = None
 
     else:
@@ -523,12 +489,10 @@ def get_environment_page(page_number):
             "page": page_number
         }
 
-
     print()
     print(
         f"Loading Thai PBS Environment page {page_number}..."
     )
-
 
     try:
 
@@ -538,12 +502,10 @@ def get_environment_page(page_number):
             timeout=30
         )
 
-
         print(
             "Status:",
             response.status_code
         )
-
 
         if response.status_code != 200:
 
@@ -557,20 +519,16 @@ def get_environment_page(page_number):
 
             return []
 
-
         article_urls = extract_article_urls(
             response.text
         )
-
 
         print(
             "Article URLs found:",
             len(article_urls)
         )
 
-
         return article_urls
-
 
     except Exception as e:
 
@@ -584,42 +542,27 @@ def get_environment_page(page_number):
 
 # ==========================================================
 # CONVERT THAI BUDDHIST YEAR
-#
-# Examples:
-#
-# 69   -> 2569 -> 2026
-# 2569 -> 2026
 # ==========================================================
 
 def thai_year_to_gregorian(year):
 
     year = int(year)
 
-
-    # Short Thai Buddhist year
     # 69 -> 2569
     if year < 100:
 
         year += 2500
 
-
-    # Buddhist Era -> Gregorian
+    # 2569 -> 2026
     if year > 2400:
 
         year -= 543
-
 
     return year
 
 
 # ==========================================================
-# PARSE THAI DATE FROM TEXT
-#
-# Examples:
-#
-# 7 ส.ค. 69
-# 28 ส.ค. 2569
-# 7 สิงหาคม 2569
+# PARSE THAI DATE
 # ==========================================================
 
 def parse_thai_date(text):
@@ -628,8 +571,6 @@ def parse_thai_date(text):
 
         return None
 
-
-    # Sort longest month names first
     month_pattern = "|".join(
 
         sorted(
@@ -642,7 +583,6 @@ def parse_thai_date(text):
         )
     )
 
-
     pattern = (
 
         r"(\d{1,2})"
@@ -654,17 +594,14 @@ def parse_thai_date(text):
         r"(\d{2,4})"
     )
 
-
     match = re.search(
         pattern,
         text
     )
 
-
     if not match:
 
         return None
-
 
     try:
 
@@ -684,13 +621,11 @@ def parse_thai_date(text):
             match.group(3)
         )
 
-
         return datetime(
             year,
             month,
             day
         )
-
 
     except Exception:
 
@@ -705,7 +640,6 @@ def get_json_ld_objects(soup):
 
     objects = []
 
-
     scripts = soup.find_all(
         "script",
         attrs={
@@ -714,16 +648,14 @@ def get_json_ld_objects(soup):
         }
     )
 
-
     for script in scripts:
 
         try:
 
             data = json.loads(
-                script.string or
-                script.get_text()
+                script.string
+                or script.get_text()
             )
-
 
             if isinstance(
                 data,
@@ -740,11 +672,9 @@ def get_json_ld_objects(soup):
                     data
                 )
 
-
         except Exception:
 
             continue
-
 
     return objects
 
@@ -758,13 +688,11 @@ def walk_json(data):
 
         yield data
 
-
         for value in data.values():
 
             yield from walk_json(
                 value
             )
-
 
     elif isinstance(
         data,
@@ -788,7 +716,6 @@ def extract_title(soup):
         "h1"
     )
 
-
     if h1:
 
         title = h1.get_text(
@@ -800,7 +727,6 @@ def extract_title(soup):
 
             return title
 
-
     meta = soup.find(
         "meta",
         attrs={
@@ -808,7 +734,6 @@ def extract_title(soup):
                 "og:title"
         }
     )
-
 
     if (
         meta
@@ -821,7 +746,6 @@ def extract_title(soup):
             .strip()
         )
 
-
     return ""
 
 
@@ -830,7 +754,6 @@ def extract_title(soup):
 # ==========================================================
 
 def extract_published_date(soup):
-
 
     # ------------------------------------------------------
     # 1. Standard metadata
@@ -863,7 +786,6 @@ def extract_published_date(soup):
         )
     ]
 
-
     for meta in candidates:
 
         if (
@@ -892,7 +814,6 @@ def extract_published_date(soup):
 
                 pass
 
-
     # ------------------------------------------------------
     # 2. JSON-LD datePublished
     # ------------------------------------------------------
@@ -908,7 +829,6 @@ def extract_published_date(soup):
             value = item.get(
                 "datePublished"
             )
-
 
             if value:
 
@@ -930,7 +850,6 @@ def extract_published_date(soup):
 
                     pass
 
-
     # ------------------------------------------------------
     # 3. <time>
     # ------------------------------------------------------
@@ -942,7 +861,6 @@ def extract_published_date(soup):
         value = time_tag.get(
             "datetime"
         )
-
 
         if value:
 
@@ -964,9 +882,8 @@ def extract_published_date(soup):
 
                 pass
 
-
     # ------------------------------------------------------
-    # 4. Thai visible date
+    # 4. Visible Thai date
     # ------------------------------------------------------
 
     page_text = soup.get_text(
@@ -974,111 +891,9 @@ def extract_published_date(soup):
         strip=True
     )
 
-
     return parse_thai_date(
         page_text
     )
-
-
-# ==========================================================
-# AUTHOR
-# ==========================================================
-
-def extract_author(soup):
-
-
-    # ------------------------------------------------------
-    # Metadata
-    # ------------------------------------------------------
-
-    meta = soup.find(
-        "meta",
-        attrs={
-            "name":
-                "author"
-        }
-    )
-
-
-    if (
-        meta
-        and
-        meta.get("content")
-    ):
-
-        return (
-            meta["content"]
-            .strip()
-        )
-
-
-    # ------------------------------------------------------
-    # JSON-LD
-    # ------------------------------------------------------
-
-    for obj in get_json_ld_objects(
-        soup
-    ):
-
-        for item in walk_json(
-            obj
-        ):
-
-            author = item.get(
-                "author"
-            )
-
-
-            if isinstance(
-                author,
-                dict
-            ):
-
-                name = author.get(
-                    "name"
-                )
-
-                if name:
-
-                    return str(
-                        name
-                    ).strip()
-
-
-            elif isinstance(
-                author,
-                list
-            ):
-
-                names = []
-
-
-                for author_item in author:
-
-                    if isinstance(
-                        author_item,
-                        dict
-                    ):
-
-                        name = author_item.get(
-                            "name"
-                        )
-
-                        if name:
-
-                            names.append(
-                                str(name)
-                            )
-
-
-                if names:
-
-                    return ", ".join(
-                        names
-                    )
-
-
-    return "Thai PBS"
 
 
 # ==========================================================
@@ -1098,7 +913,6 @@ def extract_json_ld_article_body(soup):
             article_body = item.get(
                 "articleBody"
             )
-
 
             if (
                 isinstance(
@@ -1120,7 +934,6 @@ def extract_json_ld_article_body(soup):
                     )
                 )
 
-
     return ""
 
 
@@ -1130,9 +943,8 @@ def extract_json_ld_article_body(soup):
 
 def extract_article_text(soup):
 
-
     # ------------------------------------------------------
-    # Best case: structured articleBody
+    # Best case: JSON-LD articleBody
     # ------------------------------------------------------
 
     json_text = (
@@ -1141,13 +953,11 @@ def extract_article_text(soup):
         )
     )
 
-
     if len(
         json_text
     ) >= 250:
 
         return json_text
-
 
     # ------------------------------------------------------
     # HTML containers
@@ -1172,13 +982,10 @@ def extract_article_text(soup):
         "main"
     ]
 
-
     best_paragraphs = []
-
 
     unwanted_phrases = [
 
-        # Thai navigation / recommendations
         "อ่านข่าว :",
         "อ่านข่าว:",
         "แท็กที่เกี่ยวข้อง",
@@ -1194,7 +1001,6 @@ def extract_article_text(soup):
         "ผู้ช่วย ai",
         "อ่านให้ฟัง",
 
-        # English
         "all rights reserved",
         "copyright",
         "subscribe",
@@ -1203,26 +1009,17 @@ def extract_article_text(soup):
         "advertisement"
     ]
 
-
-    # ------------------------------------------------------
-    # Try each container and select whichever gives the
-    # largest sensible article body.
-    # ------------------------------------------------------
-
     for selector in selectors:
 
         container = soup.select_one(
             selector
         )
 
-
         if not container:
 
             continue
 
-
         paragraphs = []
-
 
         for p in container.find_all(
             "p"
@@ -1233,16 +1030,13 @@ def extract_article_text(soup):
                 strip=True
             )
 
-
             if len(text) < 25:
 
                 continue
 
-
             lower_text = (
                 text.lower()
             )
-
 
             if any(
                 phrase.lower()
@@ -1254,13 +1048,11 @@ def extract_article_text(soup):
 
                 continue
 
-
             if text not in paragraphs:
 
                 paragraphs.append(
                     text
                 )
-
 
         if len(
             " ".join(paragraphs)
@@ -1271,7 +1063,6 @@ def extract_article_text(soup):
             best_paragraphs = (
                 paragraphs
             )
-
 
     # ------------------------------------------------------
     # Fallback: all paragraphs
@@ -1288,16 +1079,13 @@ def extract_article_text(soup):
                 strip=True
             )
 
-
             if len(text) < 30:
 
                 continue
 
-
             lower_text = (
                 text.lower()
             )
-
 
             if any(
                 phrase.lower()
@@ -1309,13 +1097,11 @@ def extract_article_text(soup):
 
                 continue
 
-
             if text not in best_paragraphs:
 
                 best_paragraphs.append(
                     text
                 )
-
 
     return " ".join(
         best_paragraphs
@@ -1332,7 +1118,6 @@ def find_environment_keywords(text):
 
     matches = []
 
-
     for keyword in ENVIRONMENT_KEYWORDS:
 
         if keyword.lower() in lower_text:
@@ -1341,12 +1126,14 @@ def find_environment_keywords(text):
                 keyword
             )
 
-
     return matches
 
 
 # ==========================================================
-# ASEAN COUNTRY DETECTION
+# TARGET COUNTRY DETECTION
+#
+# Because ASEAN_COUNTRY_KEYWORDS contains only six countries,
+# this function can only return those six countries.
 # ==========================================================
 
 def find_asean_countries(text):
@@ -1354,7 +1141,6 @@ def find_asean_countries(text):
     lower_text = text.lower()
 
     countries = []
-
 
     for country, keywords in (
         ASEAN_COUNTRY_KEYWORDS.items()
@@ -1366,13 +1152,8 @@ def find_asean_countries(text):
                 keyword.lower()
             )
 
-
-            # ------------------------------------------------
             # Thai text does not use spaces consistently,
-            # so normal \b word boundaries are unreliable.
-            # Simple containment works better here.
-            # ------------------------------------------------
-
+            # so simple containment works better here.
             if keyword_lower in lower_text:
 
                 countries.append(
@@ -1380,7 +1161,6 @@ def find_asean_countries(text):
                 )
 
                 break
-
 
     return countries
 
@@ -1396,7 +1176,6 @@ def scrape_article(url):
         url
     )
 
-
     try:
 
         response = session.get(
@@ -1408,12 +1187,10 @@ def scrape_article(url):
             timeout=30
         )
 
-
         print(
             "  Status:",
             response.status_code
         )
-
 
         if response.status_code != 200:
 
@@ -1423,12 +1200,10 @@ def scrape_article(url):
 
             return None
 
-
         soup = BeautifulSoup(
             response.text,
             "html.parser"
         )
-
 
         # --------------------------------------------------
         # Title
@@ -1438,7 +1213,6 @@ def scrape_article(url):
             soup
         )
 
-
         if not title:
 
             print(
@@ -1446,7 +1220,6 @@ def scrape_article(url):
             )
 
             return None
-
 
         # --------------------------------------------------
         # Date
@@ -1458,7 +1231,6 @@ def scrape_article(url):
             )
         )
 
-
         if published_date is None:
 
             print(
@@ -1466,7 +1238,6 @@ def scrape_article(url):
             )
 
             return None
-
 
         # --------------------------------------------------
         # Text
@@ -1478,7 +1249,6 @@ def scrape_article(url):
             )
         )
 
-
         if len(article_text) < 200:
 
             print(
@@ -1487,16 +1257,6 @@ def scrape_article(url):
             )
 
             return None
-
-
-        # --------------------------------------------------
-        # Author
-        # --------------------------------------------------
-
-        author = extract_author(
-            soup
-        )
-
 
         return {
 
@@ -1509,16 +1269,12 @@ def scrape_article(url):
             "published_at":
                 published_date,
 
-            "author":
-                author,
-
             "article_text":
                 article_text,
 
             "url":
                 clean_url(url)
         }
-
 
     except Exception as e:
 
@@ -1531,102 +1287,181 @@ def scrape_article(url):
 
 
 # ==========================================================
-# LOAD EXISTING CSV
+# LOAD EXISTING THAILAND URLS FROM SUPABASE
 # ==========================================================
 
-def load_existing_data():
+def load_existing_urls():
 
-    if not os.path.exists(
-        OUTPUT_FILE
+    print()
+    print(
+        "Loading existing Thailand URLs from Supabase..."
+    )
+
+    existing_urls = set()
+
+    start = 0
+    page_size = 1000
+
+    while True:
+
+        try:
+
+            response = (
+                supabase
+                .table(RAW_TABLE)
+                .select("url")
+                .eq(
+                    "source_country",
+                    SOURCE_COUNTRY
+                )
+                .range(
+                    start,
+                    start + page_size - 1
+                )
+                .execute()
+            )
+
+            rows = (
+                response.data
+                or []
+            )
+
+            if not rows:
+
+                break
+
+            for row in rows:
+
+                url = row.get(
+                    "url"
+                )
+
+                if url:
+
+                    existing_urls.add(
+                        clean_url(url)
+                    )
+
+            if len(rows) < page_size:
+
+                break
+
+            start += page_size
+
+        except Exception as e:
+
+            print(
+                "Error loading existing Supabase URLs:",
+                e
+            )
+
+            break
+
+    print(
+        "Existing Thailand URLs:",
+        len(existing_urls)
+    )
+
+    return existing_urls
+
+
+# ==========================================================
+# INSERT ARTICLES INTO SUPABASE
+# ==========================================================
+
+def insert_articles(
+    articles
+):
+
+    if not articles:
+
+        print()
+        print(
+            "No new articles to insert."
+        )
+
+        return 0
+
+    inserted = 0
+
+    for i in range(
+        0,
+        len(articles),
+        INSERT_BATCH_SIZE
     ):
 
-        return (
-            pd.DataFrame(),
-            set(),
-            {}
-        )
+        batch = articles[
+            i:
+            i + INSERT_BATCH_SIZE
+        ]
 
+        try:
 
-    try:
+            (
+                supabase
+                .table(RAW_TABLE)
+                .insert(batch)
+                .execute()
+            )
 
-        existing_df = pd.read_csv(
-            OUTPUT_FILE
-        )
+            inserted += len(
+                batch
+            )
 
+            print(
+                f"Inserted batch of "
+                f"{len(batch)} articles."
+            )
 
-        existing_urls = set()
+        except Exception as e:
 
-        existing_dates = {}
+            print()
+            print(
+                "Batch insert failed:",
+                e
+            )
 
+            print(
+                "Trying articles one-by-one..."
+            )
 
-        if "url" in existing_df.columns:
+            for article in batch:
 
-            for _, row in existing_df.iterrows():
+                try:
 
-                if pd.isna(
-                    row.get("url")
-                ):
-
-                    continue
-
-
-                url = clean_url(
-                    str(
-                        row["url"]
+                    (
+                        supabase
+                        .table(RAW_TABLE)
+                        .insert(article)
+                        .execute()
                     )
-                )
 
+                    inserted += 1
 
-                existing_urls.add(
-                    url
-                )
+                except Exception as inner_e:
 
+                    print()
+                    print(
+                        "FAILED INSERT:"
+                    )
 
-                if (
-                    "published_at"
-                    in existing_df.columns
-                    and
-                    not pd.isna(
-                        row.get(
-                            "published_at"
+                    print(
+                        article.get(
+                            "title"
                         )
                     )
-                ):
 
-                    try:
+                    print(
+                        article.get(
+                            "url"
+                        )
+                    )
 
-                        existing_dates[
-                            url
-                        ] = pd.to_datetime(
-                            row[
-                                "published_at"
-                            ]
-                        ).to_pydatetime()
+                    print(
+                        inner_e
+                    )
 
-                    except Exception:
-
-                        pass
-
-
-        return (
-            existing_df,
-            existing_urls,
-            existing_dates
-        )
-
-
-    except Exception as e:
-
-        print(
-            "Could not read existing CSV:",
-            e
-        )
-
-        return (
-            pd.DataFrame(),
-            set(),
-            {}
-        )
+    return inserted
 
 
 # ==========================================================
@@ -1636,7 +1471,6 @@ def load_existing_data():
 def process_urls(
     urls,
     existing_urls,
-    existing_dates,
     seen_urls,
     results,
     stats
@@ -1644,13 +1478,11 @@ def process_urls(
 
     page_dates = []
 
-
     for url in urls:
 
         url = clean_url(
             url
         )
-
 
         # --------------------------------------------------
         # Duplicate within this run
@@ -1660,14 +1492,12 @@ def process_urls(
 
             continue
 
-
         seen_urls.add(
             url
         )
 
-
         # --------------------------------------------------
-        # Already saved
+        # Already in Supabase
         # --------------------------------------------------
 
         if url in existing_urls:
@@ -1676,26 +1506,12 @@ def process_urls(
                 "already_exists"
             ] += 1
 
-
             print(
-                "Already in CSV:",
+                "Already in Supabase:",
                 url
             )
 
-
-            # Existing date still helps us decide
-            # when to stop archive pagination.
-            if url in existing_dates:
-
-                page_dates.append(
-                    existing_dates[
-                        url
-                    ]
-                )
-
-
             continue
-
 
         # --------------------------------------------------
         # Scrape
@@ -1705,7 +1521,6 @@ def process_urls(
             url
         )
 
-
         if article is None:
 
             stats[
@@ -1714,27 +1529,22 @@ def process_urls(
 
             continue
 
-
         stats[
             "scraped"
         ] += 1
-
 
         article_date = article[
             "published_at"
         ]
 
-
         page_dates.append(
             article_date
         )
-
 
         print(
             "  Date:",
             article_date.date()
         )
-
 
         # --------------------------------------------------
         # Date filter
@@ -1752,7 +1562,6 @@ def process_urls(
 
             continue
 
-
         if article_date < START_DATE:
 
             stats[
@@ -1764,7 +1573,6 @@ def process_urls(
             )
 
             continue
-
 
         # --------------------------------------------------
         # Country + environmental metadata
@@ -1783,13 +1591,11 @@ def process_urls(
             ]
         )
 
-
-        asean_countries = (
+        target_countries = (
             find_asean_countries(
                 combined_text
             )
         )
-
 
         environment_matches = (
             find_environment_keywords(
@@ -1797,83 +1603,105 @@ def process_urls(
             )
         )
 
+        # --------------------------------------------------
+        # Map to shared news_raw Supabase schema
+        #
+        # IMPORTANT:
+        # news_id and scraped_at are NOT supplied.
+        # Supabase generates them automatically.
+        # --------------------------------------------------
 
-        article[
-            "asean_countries"
-        ] = ", ".join(
-            asean_countries
-        )
+        supabase_article = {
 
+            "source_country":
+                SOURCE_COUNTRY,
 
-        article[
-            "environment_keywords"
-        ] = ", ".join(
-            environment_matches
-        )
+            "title":
+                article[
+                    "title"
+                ],
 
+            "source":
+                article[
+                    "source"
+                ],
 
-        article[
-            "published_at"
-        ] = article_date.strftime(
-            "%Y-%m-%d"
-        )
+            "published_at":
+                article_date.isoformat(),
 
+            "countries":
+                ", ".join(
+                    target_countries
+                ),
+
+            "environment_keywords":
+                ", ".join(
+                    environment_matches
+                ),
+
+            "article_text":
+                article[
+                    "article_text"
+                ],
+
+            "url":
+                article[
+                    "url"
+                ]
+        }
 
         # --------------------------------------------------
         # IMPORTANT:
         #
         # Do NOT require Thailand.
         #
-        # Any valid article from Thai PBS Environment within
-        # the date range is retained.
+        # Thai PBS Environment may contain regional/global
+        # environmental stories. "countries" is metadata.
+        #
+        # However, countries can now ONLY contain:
+        # Singapore, Malaysia, Indonesia, Thailand,
+        # Philippines or Brunei.
         # --------------------------------------------------
 
         results.append(
-            article
+            supabase_article
         )
-
 
         stats[
             "saved"
         ] += 1
 
-
         print(
-            "  SAVED"
+            "  READY FOR SUPABASE"
         )
 
-
         print(
-            "  ASEAN countries:",
-            article[
-                "asean_countries"
+            "  Target countries:",
+            supabase_article[
+                "countries"
             ]
-            if article[
-                "asean_countries"
+            if supabase_article[
+                "countries"
             ]
             else "None"
         )
-
 
         print(
             "  Environment keywords:",
-            article[
+            supabase_article[
                 "environment_keywords"
             ]
-            if article[
+            if supabase_article[
                 "environment_keywords"
             ]
             else "None"
         )
 
-
         time.sleep(1)
-
 
     if not page_dates:
 
         return None
-
 
     return min(
         page_dates
@@ -1899,7 +1727,6 @@ def main():
         "======================================"
     )
 
-
     print(
         "Start:",
         START_DATE.date()
@@ -1910,46 +1737,27 @@ def main():
         END_DATE.date()
     )
 
-
-    # ------------------------------------------------------
-    # Create output directory
-    # ------------------------------------------------------
-
-    output_directory = os.path.dirname(
-        OUTPUT_FILE
+    print(
+        "Source country:",
+        SOURCE_COUNTRY
     )
-
-
-    if output_directory:
-
-        os.makedirs(
-            output_directory,
-            exist_ok=True
-        )
-
-
-    # ------------------------------------------------------
-    # Existing CSV
-    # ------------------------------------------------------
-
-    (
-        existing_df,
-        existing_urls,
-        existing_dates
-
-    ) = load_existing_data()
-
 
     print(
-        "Existing URLs:",
-        len(existing_urls)
+        "Destination:",
+        "Supabase news_raw"
     )
 
+    # ------------------------------------------------------
+    # Existing Supabase URLs
+    # ------------------------------------------------------
+
+    existing_urls = (
+        load_existing_urls()
+    )
 
     results = []
 
     seen_urls = set()
-
 
     stats = {
 
@@ -1966,7 +1774,6 @@ def main():
         "saved": 0
     }
 
-
     # ======================================================
     # PAGINATION
     # ======================================================
@@ -1976,11 +1783,9 @@ def main():
         MAX_PAGES + 1
     ):
 
-
         urls = get_environment_page(
             page_number
         )
-
 
         if not urls:
 
@@ -1991,14 +1796,11 @@ def main():
 
             break
 
-
         oldest_date = process_urls(
 
             urls,
 
             existing_urls,
-
-            existing_dates,
 
             seen_urls,
 
@@ -2006,7 +1808,6 @@ def main():
 
             stats
         )
-
 
         print()
         print(
@@ -2016,9 +1817,8 @@ def main():
             else "Unknown"
         )
 
-
         # --------------------------------------------------
-        # Stop when we have clearly passed START_DATE
+        # Stop once archive has passed START_DATE
         # --------------------------------------------------
 
         if (
@@ -2038,9 +1838,46 @@ def main():
 
             break
 
-
         time.sleep(1)
 
+    # ======================================================
+    # REMOVE DUPLICATES WITHIN CURRENT RUN
+    # ======================================================
+
+    unique_results = {}
+
+    for article in results:
+
+        unique_results[
+            article[
+                "url"
+            ]
+        ] = article
+
+    results = list(
+        unique_results.values()
+    )
+
+    # ======================================================
+    # INSERT INTO SUPABASE
+    # ======================================================
+
+    print()
+    print(
+        "======================================"
+    )
+
+    print(
+        "INSERTING INTO SUPABASE"
+    )
+
+    print(
+        "======================================"
+    )
+
+    inserted = insert_articles(
+        results
+    )
 
     # ======================================================
     # SUMMARY
@@ -2058,7 +1895,6 @@ def main():
     print(
         "======================================"
     )
-
 
     print(
         "Unique URLs encountered:",
@@ -2094,182 +1930,23 @@ def main():
     )
 
     print(
-        "Already in CSV:",
+        "Already in Supabase:",
         stats[
             "already_exists"
         ]
     )
 
     print(
-        "New articles saved:",
+        "Valid articles:",
         stats[
             "saved"
         ]
     )
 
-
-    # ======================================================
-    # NOTHING NEW
-    # ======================================================
-
-    if not results:
-
-        print()
-        print(
-            "No new articles to append."
-        )
-
-        return
-
-
-    # ======================================================
-    # NEW DATAFRAME
-    # ======================================================
-
-    new_df = pd.DataFrame(
-        results
+    print(
+        "Inserted into Supabase:",
+        inserted
     )
-
-
-    new_df.drop_duplicates(
-        subset=[
-            "url"
-        ],
-        keep="first",
-        inplace=True
-    )
-
-
-    # ======================================================
-    # APPEND EXISTING CSV
-    # ======================================================
-
-    if not existing_df.empty:
-
-        combined_df = pd.concat(
-            [
-                existing_df,
-                new_df
-            ],
-            ignore_index=True
-        )
-
-
-        before = len(
-            combined_df
-        )
-
-
-        combined_df.drop_duplicates(
-            subset=[
-                "url"
-            ],
-            keep="first",
-            inplace=True
-        )
-
-
-        print(
-            "Duplicates removed:",
-            before
-            - len(combined_df)
-        )
-
-
-        df = combined_df
-
-
-    else:
-
-        df = new_df
-
-
-    # ======================================================
-    # DATE SORT
-    # ======================================================
-
-    df[
-        "published_at"
-    ] = pd.to_datetime(
-        df[
-            "published_at"
-        ],
-        errors="coerce"
-    )
-
-
-    df = (
-        df
-        .sort_values(
-            "published_at",
-            ascending=False
-        )
-        .reset_index(
-            drop=True
-        )
-    )
-
-
-    df[
-        "published_at"
-    ] = (
-        df[
-            "published_at"
-        ]
-        .dt.strftime(
-            "%Y-%m-%d"
-        )
-    )
-
-
-    # ======================================================
-    # COLUMN ORDER
-    # ======================================================
-
-    desired_columns = [
-
-        "title",
-
-        "source",
-
-        "published_at",
-
-        "author",
-
-        "asean_countries",
-
-        "environment_keywords",
-
-        "article_text",
-
-        "url"
-    ]
-
-
-    for column in desired_columns:
-
-        if column not in df.columns:
-
-            df[
-                column
-            ] = ""
-
-
-    df = df[
-        desired_columns
-    ]
-
-
-    # ======================================================
-    # SAVE
-    # ======================================================
-
-    df.to_csv(
-        OUTPUT_FILE,
-        index=False,
-        encoding="utf-8-sig"
-    )
-
 
     print()
     print(
@@ -2282,22 +1959,6 @@ def main():
 
     print(
         "======================================"
-    )
-
-
-    print(
-        "New articles this run:",
-        len(new_df)
-    )
-
-    print(
-        "Total unique articles:",
-        len(df)
-    )
-
-    print(
-        "Saved:",
-        OUTPUT_FILE
     )
 
 
