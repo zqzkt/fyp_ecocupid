@@ -3,11 +3,14 @@ import json
 import re
 import sys
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 from collections import Counter, defaultdict
 
+import pandas as pd
 from dotenv import load_dotenv
 from apify_client import ApifyClient
+from lingua import Language, LanguageDetectorBuilder
 
 
 # =========================================================
@@ -21,8 +24,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-from supabase.facebook_pipeline import sync_facebook_rows
 
 load_dotenv(REPO_ROOT / ".env")
 
@@ -44,7 +45,24 @@ COMMENTS_ACTOR = "apify/facebook-comments-scraper"
 
 POST_LIMIT_PER_PAGE = 25
 COMMENT_LIMIT_PER_POST = 10
-POST_DATE_RANGE = "60 days"
+
+
+def previous_calendar_month():
+    """Return the exact previous calendar month as UTC timestamps."""
+
+    today = datetime.now(timezone.utc).date()
+    current_month_start = today.replace(day=1)
+    previous_month_end = current_month_start - pd.Timedelta(days=1)
+    previous_month_start = previous_month_end.replace(day=1)
+
+    return (
+        pd.Timestamp(previous_month_start, tz="UTC"),
+        pd.Timestamp(current_month_start, tz="UTC"),
+    )
+
+
+MONTH_START, CURRENT_MONTH_START = previous_calendar_month()
+POST_DATE_RANGE = MONTH_START.date().isoformat()
 
 # Maximum number of selected posts from the same topic.
 MAX_POSTS_PER_TOPIC_FOR_COMMENTS = 4
@@ -74,6 +92,10 @@ USE_CACHED_COMMENTS = True
 # this True will upsert the newly classified posts/comments.
 UPLOAD_TO_SUPABASE = True
 
+# Instagram and Reddit currently keep English-language records only.
+# Keep this True to apply the same rule to Facebook.
+ENGLISH_ONLY = True
+
 DATA_DIR = REPO_ROOT / "data" / "raw"
 
 POSTS_CACHE_FILE = DATA_DIR / "facebook_posts_raw.json"
@@ -94,6 +116,10 @@ NORMALISED_POSTS_FILE = (
 NORMALISED_COMMENTS_FILE = (
     DATA_DIR / "facebook_comments_normalised.json"
 )
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+POSTS_CSV = SCRIPT_DIR / "facebook_posts.csv"
+COMMENTS_CSV = SCRIPT_DIR / "facebook_comments.csv"
 
 
 # =========================================================
@@ -795,6 +821,34 @@ def safe_int(value):
         return 0
 
 
+language_detector = (
+    LanguageDetectorBuilder
+    .from_all_languages()
+    .with_minimum_relative_distance(0.25)
+    .build()
+)
+
+
+def is_english(text):
+    """Apply the same English-language rule used by the other collectors."""
+
+    text = str(text or "").strip()
+    if len(text) < 10:
+        return False
+
+    return language_detector.detect_language_of(text) == Language.ENGLISH
+
+
+def is_in_previous_calendar_month(value):
+    """Return True when a timestamp falls inside the reporting month."""
+
+    timestamp = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(timestamp):
+        return False
+
+    return MONTH_START <= timestamp < CURRENT_MONTH_START
+
+
 def get_page_name(post):
     """Apify may return pageName as either a string or object."""
 
@@ -1078,7 +1132,14 @@ def fetch_facebook_posts(
 
         enriched_posts.append(post)
 
-    return enriched_posts
+    # The actor accepts a lower boundary only. Enforce both boundaries
+    # locally so the output contains exactly the previous calendar month.
+    return [
+        post
+        for post in enriched_posts
+        if not post.get("postId")
+        or is_in_previous_calendar_month(post.get("time"))
+    ]
 
 
 # =========================================================
@@ -1603,6 +1664,61 @@ def normalise_facebook_comment(comment):
     }
 
 
+def save_csv(rows, filepath, json_columns=None):
+    """Save normalised rows using the same UTF-8 CSV format as other sources."""
+
+    dataframe = pd.DataFrame(rows)
+
+    for column in json_columns or []:
+        if column in dataframe.columns:
+            dataframe[column] = dataframe[column].apply(
+                lambda value: json.dumps(value, ensure_ascii=False)
+                if isinstance(value, (dict, list))
+                else value
+            )
+
+    dataframe.to_csv(filepath, index=False, encoding="utf-8-sig")
+    print(f"Saved {len(dataframe)} rows to {filepath}")
+
+
+def sync_to_supabase(posts, comments):
+    """Sync cleaned Facebook records through the existing pipeline."""
+
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = (
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or ""
+    ).strip()
+
+    if not url or not key:
+        print("✗ Missing SUPABASE_URL or Supabase server key in .env")
+        return None
+
+    if key.startswith("sb_publishable_") or key.startswith("sb_anon_"):
+        print("✗ Supabase key must be a server-only secret/service-role key")
+        return None
+
+    try:
+        from scripts.supabase.facebook_pipeline import sync_facebook_rows
+
+        print("Syncing to Supabase...")
+        counts = sync_facebook_rows(posts, comments)
+        print("✓ Supabase sync successful")
+        print(f"Upserted: {counts}")
+        return counts
+    except ImportError as error:
+        print(f"✗ Import error: {error}")
+    except Exception as error:
+        print(f"✗ Supabase sync failed: {error}")
+        import traceback
+
+        traceback.print_exc()
+
+    return None
+
+
 # =========================================================
 # MAIN PROGRAM
 # =========================================================
@@ -1628,6 +1744,14 @@ if __name__ == "__main__":
             FACEBOOK_SOURCES
         )
         save_json(posts, POSTS_CACHE_FILE)
+
+    # Apply the exact month boundary to both fresh and cached records.
+    posts = [
+        post
+        for post in posts
+        if not post.get("postId")
+        or is_in_previous_calendar_month(post.get("time"))
+    ]
 
     usable_posts = [
         post
@@ -1657,6 +1781,16 @@ if __name__ == "__main__":
     print_source_coverage(posts)
     print_source_errors(posts)
 
+    if ENGLISH_ONLY:
+        posts_for_classification = [
+            post
+            for post in posts
+            if not post.get("postId")
+            or is_english(build_classification_text(post))
+        ]
+    else:
+        posts_for_classification = posts
+
     # =====================================================
     # STEP 2: CLASSIFY ENVIRONMENTAL POSTS
     # =====================================================
@@ -1664,7 +1798,7 @@ if __name__ == "__main__":
     (
         environmental_posts,
         rejected_posts,
-    ) = split_environmental_posts(posts)
+    ) = split_environmental_posts(posts_for_classification)
 
     print(
         f"\nEnvironmental posts found: "
@@ -1798,6 +1932,32 @@ if __name__ == "__main__":
     else:
         comments = []
 
+    # Remove duplicates and keep comments attached to accepted posts only.
+    unique_comments = []
+    seen_comment_ids = set()
+    valid_post_ids = {
+        str(post.get("postId"))
+        for post in environmental_posts
+        if post.get("postId")
+    }
+
+    for comment in comments:
+        comment_id = str(comment.get("commentId") or "")
+        parent_post_id = str(comment.get("parent_post_id") or "")
+
+        if comment_id and comment_id in seen_comment_ids:
+            continue
+        if parent_post_id not in valid_post_ids:
+            continue
+        if ENGLISH_ONLY and not is_english(comment.get("text")):
+            continue
+
+        if comment_id:
+            seen_comment_ids.add(comment_id)
+        unique_comments.append(comment)
+
+    comments = unique_comments
+
     print(
         f"\nComments available: "
         f"{len(comments)}"
@@ -1842,6 +2002,17 @@ if __name__ == "__main__":
         NORMALISED_COMMENTS_FILE
     )
 
+    save_csv(
+        normalised_posts,
+        POSTS_CSV,
+        json_columns=["matched_topics"],
+    )
+
+    save_csv(
+        normalised_comments,
+        COMMENTS_CSV,
+    )
+
     # =====================================================
     # STEP 7: SUPABASE SYNC
     # =====================================================
@@ -1851,15 +2022,16 @@ if __name__ == "__main__":
         print("SYNCING TO SUPABASE")
         print("==============================")
 
-        sync_counts = sync_facebook_rows(
+        sync_counts = sync_to_supabase(
             normalised_posts,
             normalised_comments
         )
 
-        print(
-            "\nSupabase sync completed:",
-            sync_counts
-        )
+        if sync_counts is not None:
+            print(
+                "\nSupabase sync completed:",
+                sync_counts
+            )
     else:
         print("\nSupabase upload disabled.")
 
@@ -1895,5 +2067,8 @@ if __name__ == "__main__":
         "Comments available:",
         len(comments)
     )
+
+    print("Saved:", POSTS_CSV)
+    print("Saved:", COMMENTS_CSV)
 
     print("\nDone.")
