@@ -49,7 +49,6 @@ API_URL = (
 
 SEARCH_PARAM = "singapore_environment"
 
-
 # Change these as needed
 START_DATE = os.getenv(
     "NEWS_START_DATE",
@@ -60,7 +59,6 @@ END_DATE = os.getenv(
     "NEWS_END_DATE",
     "2026-08-31"
 )
-
 
 START_DATE = datetime.strptime(
     START_DATE,
@@ -78,76 +76,37 @@ END_DATE = datetime.strptime(
 # ============================================================
 
 ENVIRONMENT_KEYWORDS = [
-
-    "environment",
-    "environmental",
-    "sustainability",
+    "environment", "environmental", "sustainability",
     "sustainable development",
 
-    "climate change",
-    "global warming",
-    "climate crisis",
-    "climate action",
-    "climate risk",
+    "climate change", "global warming", "climate crisis",
+    "climate action", "climate risk",
 
-    "carbon emissions",
-    "carbon emission",
-    "carbon footprint",
-    "carbon neutral",
-    "carbon neutrality",
-    "decarbonisation",
-    "decarbonization",
-    "net zero",
-    "greenhouse gas",
+    "carbon emissions", "carbon emission", "carbon footprint",
+    "carbon neutral", "carbon neutrality", "decarbonisation",
+    "decarbonization", "net zero", "greenhouse gas",
     "greenhouse gases",
 
-    "renewable energy",
-    "clean energy",
-    "green energy",
-    "solar energy",
-    "solar power",
-    "wind energy",
-    "hydrogen",
+    "renewable energy", "clean energy", "green energy",
+    "solar energy", "solar power", "wind energy", "hydrogen",
     "low-carbon energy",
 
-    "pollution",
-    "air pollution",
-    "water pollution",
-    "haze",
-    "air quality",
+    "pollution", "air pollution", "water pollution",
+    "haze", "air quality",
 
-    "plastic waste",
-    "food waste",
-    "electronic waste",
-    "e-waste",
-    "recycling",
-    "waste management",
+    "plastic waste", "food waste", "electronic waste",
+    "e-waste", "recycling", "waste management",
     "circular economy",
 
-    "biodiversity",
-    "conservation",
-    "ecosystem",
-    "wildlife",
-    "deforestation",
-    "forest fires",
-    "marine biodiversity",
+    "biodiversity", "conservation", "ecosystem", "wildlife",
+    "deforestation", "forest fires", "marine biodiversity",
 
-    "flooding",
-    "flood",
-    "floods",
-    "sea level rise",
-    "coastal erosion",
-    "drought",
-    "extreme weather",
-    "heatwave",
-    "heat wave",
+    "flooding", "flood", "floods", "sea level rise",
+    "coastal erosion", "drought", "extreme weather",
+    "heatwave", "heat wave",
 
-    "green building",
-    "green buildings",
-    "sustainable transport",
-    "electric vehicle",
-    "electric vehicles",
-    "green finance"
+    "green building", "green buildings", "sustainable transport",
+    "electric vehicle", "electric vehicles", "green finance"
 ]
 
 
@@ -156,51 +115,32 @@ ENVIRONMENT_KEYWORDS = [
 # ============================================================
 
 COUNTRY_KEYWORDS = {
-
     "Singapore": [
-        "singapore",
-        "singaporean",
-        "singaporeans",
-        "s'pore",
-        "spore"
+        "singapore", "singaporean", "singaporeans",
+        "s'pore", "spore"
     ],
 
     "Malaysia": [
-        "malaysia",
-        "malaysian",
-        "malaysians",
-        "kuala lumpur",
-        "johor",
-        "selangor"
+        "malaysia", "malaysian", "malaysians",
+        "kuala lumpur", "johor", "selangor"
     ],
 
     "Indonesia": [
-        "indonesia",
-        "indonesian",
-        "indonesians",
-        "jakarta",
-        "sumatra",
-        "kalimantan"
+        "indonesia", "indonesian", "indonesians",
+        "jakarta", "sumatra", "kalimantan"
     ],
 
     "Philippines": [
-        "philippines",
-        "philippine",
-        "filipino",
-        "filipinos",
-        "manila"
+        "philippines", "philippine", "filipino",
+        "filipinos", "manila"
     ],
 
     "Thailand": [
-        "thailand",
-        "thai",
-        "bangkok"
+        "thailand", "thai", "bangkok"
     ],
 
     "Brunei": [
-        "brunei",
-        "bruneian",
-        "bandar seri begawan"
+        "brunei", "bruneian", "bandar seri begawan"
     ]
 }
 
@@ -210,7 +150,6 @@ COUNTRY_KEYWORDS = {
 # ============================================================
 
 HEADERS = {
-
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 "
@@ -230,12 +169,10 @@ HEADERS = {
 # ============================================================
 
 def parse_api_date(date_string):
-
     if not date_string:
         return None
 
     try:
-
         dt = pd.to_datetime(
             date_string,
             utc=True
@@ -254,7 +191,6 @@ def parse_api_date(date_string):
 # ============================================================
 
 def get_api_page(page_number):
-
     # Use the end date as the maximum date.
     # Add one day so that the full END_DATE is included.
     api_max_date = (
@@ -265,22 +201,13 @@ def get_api_page(page_number):
     )
 
     params = {
-
-        "pageType":
-            "sub_section",
-
-        "searchParam":
-            SEARCH_PARAM,
-
-        "page":
-            page_number,
-
-        "maxDate":
-            api_max_date
+        "pageType": "sub_section",
+        "searchParam": SEARCH_PARAM,
+        "page": page_number,
+        "maxDate": api_max_date
     }
 
     try:
-
         response = requests.get(
             API_URL,
             params=params,
@@ -299,7 +226,6 @@ def get_api_page(page_number):
         return response.json()
 
     except Exception as e:
-
         print(
             "API error:",
             e
@@ -313,28 +239,18 @@ def get_api_page(page_number):
 # ============================================================
 
 def get_article_urls():
-
     print()
-    print(
-        "DISCOVERING ARTICLES FROM ST API"
-    )
+    print("DISCOVERING ARTICLES FROM ST API")
 
     articles_found = []
     seen_urls = set()
     page = 1
 
     while True:
-
-        data = get_api_page(
-            page
-        )
+        data = get_api_page(page)
 
         if data is None:
-
-            print(
-                "Could not retrieve API page."
-            )
-
+            print("Could not retrieve API page.")
             break
 
         cards = data.get(
@@ -343,11 +259,7 @@ def get_article_urls():
         )
 
         if len(cards) == 0:
-
-            print(
-                "No more cards returned."
-            )
-
+            print("No more cards returned.")
             break
 
         print(
@@ -358,7 +270,6 @@ def get_article_urls():
         oldest_date_on_page = None
 
         for card in cards:
-
             article_card = card.get(
                 "articleCard"
             )
@@ -374,10 +285,8 @@ def get_article_urls():
                 "urlPath"
             )
 
-            published_string = (
-                article_card.get(
-                    "publishedDate"
-                )
+            published_string = article_card.get(
+                "publishedDate"
             )
 
             is_premium = article_card.get(
@@ -385,10 +294,8 @@ def get_article_urls():
                 False
             )
 
-            published_date = (
-                parse_api_date(
-                    published_string
-                )
+            published_date = parse_api_date(
+                published_string
             )
 
             if (
@@ -400,21 +307,15 @@ def get_article_urls():
             # Track oldest article on this API page
             if (
                 oldest_date_on_page is None
-                or published_date
-                < oldest_date_on_page
+                or published_date < oldest_date_on_page
             ):
+                oldest_date_on_page = published_date
 
-                oldest_date_on_page = (
-                    published_date
-                )
-
-            article_date = (
-                published_date.replace(
-                    hour=0,
-                    minute=0,
-                    second=0,
-                    microsecond=0
-                )
+            article_date = published_date.replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0
             )
 
             if article_date > END_DATE:
@@ -425,7 +326,6 @@ def get_article_urls():
 
             # Public articles only
             if is_premium:
-
                 print(
                     "Skipping premium:",
                     title
@@ -449,14 +349,9 @@ def get_article_urls():
 
             articles_found.append(
                 {
-                    "title":
-                        title,
-
-                    "url":
-                        full_url,
-
-                    "published_at":
-                        published_date
+                    "title": title,
+                    "url": full_url,
+                    "published_at": published_date
                 }
             )
 
@@ -464,10 +359,8 @@ def get_article_urls():
         # articles older than START_DATE
         if (
             oldest_date_on_page
-            and
-            oldest_date_on_page < START_DATE
+            and oldest_date_on_page < START_DATE
         ):
-
             print()
 
             print(
@@ -487,14 +380,12 @@ def get_article_urls():
         )
 
         if total:
-
             print(
                 "API reports total:",
                 total
             )
 
             if len(seen_urls) >= total:
-
                 print(
                     "Reached API total."
                 )
@@ -505,7 +396,6 @@ def get_article_urls():
 
         # Prevent runaway loop if API changes
         if page > 100:
-
             print(
                 "Safety stop reached."
             )
@@ -529,11 +419,8 @@ def get_article_urls():
 # ============================================================
 
 def get_existing_urls():
-
     print()
-    print(
-        "CHECKING EXISTING ARTICLES IN SUPABASE"
-    )
+    print("CHECKING EXISTING ARTICLES IN SUPABASE")
 
     existing_urls = set()
 
@@ -543,9 +430,7 @@ def get_existing_urls():
     start = 0
 
     try:
-
         while True:
-
             response = (
                 supabase
                 .table(RAW_TABLE)
@@ -564,7 +449,6 @@ def get_existing_urls():
             rows = response.data or []
 
             for row in rows:
-
                 url = row.get(
                     "url"
                 )
@@ -587,8 +471,8 @@ def get_existing_urls():
         return existing_urls
 
     except Exception as e:
-
         print()
+
         print(
             "Error reading existing URLs "
             "from Supabase:"
@@ -604,7 +488,6 @@ def get_existing_urls():
 # ============================================================
 
 def extract_article_text(soup):
-
     paragraphs = []
 
     article_container = soup.find(
@@ -612,35 +495,24 @@ def extract_article_text(soup):
     )
 
     if article_container:
-
-        paragraph_tags = (
-            article_container.find_all(
-                "p"
-            )
+        paragraph_tags = article_container.find_all(
+            "p"
         )
 
     else:
-
         paragraph_tags = soup.find_all(
             "p"
         )
 
     unwanted_phrases = [
-
-        "sign up now",
-        "get st's newsletters",
-        "subscribe",
-        "advertise with us",
-        "terms & conditions",
-        "personal data protection",
-        "download the app",
-        "set as preferred source",
-        "unlock this article",
+        "sign up now", "get st's newsletters", "subscribe",
+        "advertise with us", "terms & conditions",
+        "personal data protection", "download the app",
+        "set as preferred source", "unlock this article",
         "enjoy unlimited access"
     ]
 
     for p in paragraph_tags:
-
         text = p.get_text(
             " ",
             strip=True
@@ -671,13 +543,11 @@ def extract_article_text(soup):
 # ============================================================
 
 def scrape_article(article_info):
-
     url = article_info[
         "url"
     ]
 
     try:
-
         response = requests.get(
             url,
             headers=HEADERS,
@@ -685,7 +555,6 @@ def scrape_article(article_info):
         )
 
         if response.status_code != 200:
-
             print(
                 "Skipped:",
                 response.status_code,
@@ -705,28 +574,23 @@ def scrape_article(article_info):
         )
 
         if h1:
-
             title = h1.get_text(
                 " ",
                 strip=True
             )
 
         else:
-
             # Use title already supplied by API
             title = article_info[
                 "title"
             ]
 
         # Article text
-        article_text = (
-            extract_article_text(
-                soup
-            )
+        article_text = extract_article_text(
+            soup
         )
 
         if len(article_text) < 300:
-
             print(
                 "Too little usable text:",
                 title
@@ -734,34 +598,21 @@ def scrape_article(article_info):
 
             return None
 
-        published_date = (
-            article_info[
-                "published_at"
-            ]
-        )
+        published_date = article_info[
+            "published_at"
+        ]
 
         return {
-
-            "title":
-                title,
-
-            "source":
-                "The Straits Times",
-
-            "published_at":
-                published_date.strftime(
-                    "%Y-%m-%d"
-                ),
-
-            "url":
-                url,
-
-            "article_text":
-                article_text
+            "title": title,
+            "source": "The Straits Times",
+            "published_at": published_date.strftime(
+                "%Y-%m-%d"
+            ),
+            "url": url,
+            "article_text": article_text
         }
 
     except Exception as e:
-
         print(
             "Error scraping:",
             url
@@ -777,13 +628,11 @@ def scrape_article(article_info):
 # ============================================================
 
 def find_environment_keywords(text):
-
     text = text.lower()
 
     matches = []
 
     for keyword in ENVIRONMENT_KEYWORDS:
-
         pattern = (
             r"\b"
             + re.escape(
@@ -796,7 +645,6 @@ def find_environment_keywords(text):
             pattern,
             text
         ):
-
             matches.append(
                 keyword
             )
@@ -809,18 +657,12 @@ def find_environment_keywords(text):
 # ============================================================
 
 def find_countries(text):
-
     text = text.lower()
 
     countries_found = []
 
-    for (
-        country,
-        keywords
-    ) in COUNTRY_KEYWORDS.items():
-
+    for country, keywords in COUNTRY_KEYWORDS.items():
         for keyword in keywords:
-
             pattern = (
                 r"\b"
                 + re.escape(
@@ -833,7 +675,6 @@ def find_countries(text):
                 pattern,
                 text
             ):
-
                 countries_found.append(
                     country
                 )
@@ -848,9 +689,7 @@ def find_countries(text):
 # ============================================================
 
 def insert_articles_to_supabase(results):
-
     if len(results) == 0:
-
         print()
         print(
             "No matching new articles found."
@@ -865,7 +704,6 @@ def insert_articles_to_supabase(results):
     unique_results = {}
 
     for article in results:
-
         unique_results[
             article["url"]
         ] = article
@@ -881,34 +719,17 @@ def insert_articles_to_supabase(results):
     rows_to_insert = []
 
     for article in results:
-
         row = {
-
-            "source_country":
-                SOURCE_COUNTRY,
-
-            "title":
-                article["title"],
-
-            "source":
-                article["source"],
-
-            "published_at":
-                article["published_at"],
-
-            "countries":
-                article["countries"],
-
-            "environment_keywords":
-                article[
-                    "environment_keywords"
-                ],
-
-            "article_text":
-                article["article_text"],
-
-            "url":
-                article["url"]
+            "source_country": SOURCE_COUNTRY,
+            "title": article["title"],
+            "source": article["source"],
+            "published_at": article["published_at"],
+            "countries": article["countries"],
+            "environment_keywords": article[
+                "environment_keywords"
+            ],
+            "article_text": article["article_text"],
+            "url": article["url"]
         }
 
         rows_to_insert.append(
@@ -916,15 +737,9 @@ def insert_articles_to_supabase(results):
         )
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "SAVING TO SUPABASE"
-    )
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("SAVING TO SUPABASE")
+    print("======================================")
     print()
 
     print(
@@ -940,16 +755,13 @@ def insert_articles_to_supabase(results):
     inserted_count = 0
 
     try:
-
         for start in range(
             0,
             len(rows_to_insert),
             batch_size
         ):
-
             batch = rows_to_insert[
-                start:
-                start + batch_size
+                start:start + batch_size
             ]
 
             response = (
@@ -960,7 +772,6 @@ def insert_articles_to_supabase(results):
             )
 
             if response.data:
-
                 inserted_count += len(
                     response.data
                 )
@@ -972,8 +783,8 @@ def insert_articles_to_supabase(results):
             )
 
     except Exception as e:
-
         print()
+
         print(
             "Error inserting articles "
             "into Supabase:"
@@ -991,17 +802,10 @@ def insert_articles_to_supabase(results):
 # ============================================================
 
 def main():
-
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "STRAITS TIMES ENVIRONMENT SCRAPER"
-    )
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("STRAITS TIMES ENVIRONMENT SCRAPER")
+    print("======================================")
 
     print(
         "Start date:",
@@ -1023,21 +827,16 @@ def main():
     # Retrieve URLs already stored in Supabase
     # ========================================================
 
-    existing_urls = (
-        get_existing_urls()
-    )
+    existing_urls = get_existing_urls()
 
     # ========================================================
     # STEP 1:
     # Discover historical article URLs
     # ========================================================
 
-    article_list = (
-        get_article_urls()
-    )
+    article_list = get_article_urls()
 
     if len(article_list) == 0:
-
         print(
             "No articles discovered."
         )
@@ -1054,13 +853,9 @@ def main():
     )
 
     article_list = [
-
         article
-
         for article in article_list
-
-        if article["url"]
-        not in existing_urls
+        if article["url"] not in existing_urls
     ]
 
     already_existing = (
@@ -1069,15 +864,9 @@ def main():
     )
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "NEW ARTICLE CHECK"
-    )
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("NEW ARTICLE CHECK")
+    print("======================================")
 
     print(
         f"Discovered: "
@@ -1095,8 +884,8 @@ def main():
     )
 
     if len(article_list) == 0:
-
         print()
+
         print(
             "No new articles to process."
         )
@@ -1111,22 +900,15 @@ def main():
     results = []
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "SCRAPING NEW ARTICLE CONTENT"
-    )
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("SCRAPING NEW ARTICLE CONTENT")
+    print("======================================")
     print()
 
     for number, article_info in enumerate(
         article_list,
         start=1
     ):
-
         print(
             f"[{number}/{len(article_list)}] "
             f"{article_info['title']}"
@@ -1137,9 +919,7 @@ def main():
         )
 
         if article is None:
-
             time.sleep(1)
-
             continue
 
         # ----------------------------------------------------
@@ -1156,20 +936,16 @@ def main():
         # Environment keyword matching
         # ----------------------------------------------------
 
-        environment_matches = (
-            find_environment_keywords(
-                combined_text
-            )
+        environment_matches = find_environment_keywords(
+            combined_text
         )
 
         # ----------------------------------------------------
         # ASEAN country matching
         # ----------------------------------------------------
 
-        country_matches = (
-            find_countries(
-                combined_text
-            )
+        country_matches = find_countries(
+            combined_text
         )
 
         # ----------------------------------------------------
@@ -1181,10 +957,8 @@ def main():
 
         if (
             len(environment_matches) > 0
-            and
-            len(country_matches) > 0
+            and len(country_matches) > 0
         ):
-
             article[
                 "environment_keywords"
             ] = ", ".join(
@@ -1207,9 +981,7 @@ def main():
 
             print(
                 "  Date:",
-                article[
-                    "published_at"
-                ]
+                article["published_at"]
             )
 
             print(
@@ -1227,7 +999,6 @@ def main():
             )
 
         else:
-
             print(
                 "  No keyword match"
             )
@@ -1239,10 +1010,8 @@ def main():
     # Save new matching articles to Supabase
     # ========================================================
 
-    inserted_count = (
-        insert_articles_to_supabase(
-            results
-        )
+    inserted_count = insert_articles_to_supabase(
+        results
     )
 
     # ========================================================
@@ -1250,15 +1019,9 @@ def main():
     # ========================================================
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "SCRAPING FINISHED"
-    )
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("SCRAPING FINISHED")
+    print("======================================")
 
     print(
         f"URLs discovered: "

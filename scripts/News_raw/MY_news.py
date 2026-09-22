@@ -29,13 +29,10 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(
     SUPABASE_URL,
-    SUPABASE_KEY
+    SUPABASE_KEY,
 )
 
 RAW_TABLE = "news_raw"
-
-# This is the country of the news SOURCE.
-# Articles themselves may concern any of the 6 ASEAN countries.
 SOURCE_COUNTRY = "Malaysia"
 
 
@@ -50,81 +47,51 @@ BASE_URL = "https://www.astroawani.com"
 # ENVIRONMENTAL TOPIC PAGES
 # ============================================================
 #
-# These are used ONLY to discover potentially relevant articles.
-#
-# The article still has to pass:
-#   1. Date filter
-#   2. Environmental keyword filter
-#   3. ASEAN country filter
-#
-# Invalid/empty topic pages are harmless: they simply contribute
-# zero candidates.
+# Used only to discover potentially relevant articles.
+# Articles must still pass the date, environmental keyword,
+# and ASEAN country filters.
 # ============================================================
 
 TOPIC_SLUGS = [
-
     # General environment
-    "alam-sekitar",
-    "alam-sekitar-0",
-    "jabatan-alam-sekitar",
+    "alam-sekitar", "alam-sekitar-0", "jabatan-alam-sekitar",
 
     # Climate / sustainability
-    "perubahan-iklim",
-    "pemanasan-global",
-    "krisis-iklim",
+    "perubahan-iklim", "pemanasan-global", "krisis-iklim",
     "kelestarian",
 
     # Pollution
-    "pencemaran",
-    "pencemaran-alam-sekitar",
-    "pencemaran-udara",
-    "pencemaran-air",
+    "pencemaran", "pencemaran-alam-sekitar",
+    "pencemaran-udara", "pencemaran-air",
 
     # Haze / air quality
-    "jerebu",
-    "jerebu-malaysia",
-    "jerebu-di-sarawak",
+    "jerebu", "jerebu-malaysia", "jerebu-di-sarawak",
 
     # Nature
-    "biodiversiti",
-    "pemuliharaan",
-    "hidupan-liar",
-    "ekosistem",
+    "biodiversiti", "pemuliharaan", "hidupan-liar", "ekosistem",
 
     # Forests / fires
-    "kebakaran-hutan",
-    "penebangan-hutan",
+    "kebakaran-hutan", "penebangan-hutan",
 
     # Waste
-    "sisa",
-    "sisa-plastik",
-    "kitar-semula",
+    "sisa", "sisa-plastik", "kitar-semula",
 
     # Energy
-    "tenaga-boleh-diperbaharui",
-    "tenaga-hijau",
-    "tenaga-bersih",
-    "tenaga-solar",
+    "tenaga-boleh-diperbaharui", "tenaga-hijau",
+    "tenaga-bersih", "tenaga-solar",
 
     # Carbon
-    "karbon",
-    "pelepasan-karbon",
+    "karbon", "pelepasan-karbon",
 
     # Weather / hazards
-    "banjir",
-    "kemarau",
-    "gelombang-haba",
-    "cuaca-ekstrem",
-    "cuaca",
-    "panas",
+    "banjir", "kemarau", "gelombang-haba", "cuaca-ekstrem",
+    "cuaca", "panas",
 
     # Green development
-    "kenderaan-elektrik",
-    "bangunan-hijau",
-    "kewangan-hijau",
+    "kenderaan-elektrik", "bangunan-hijau", "kewangan-hijau",
 
-    # Other useful environment-related topics
-    "operasi-pembenihan-awan"
+    # Other environment-related topics
+    "operasi-pembenihan-awan",
 ]
 
 
@@ -133,19 +100,13 @@ TOPIC_SLUGS = [
 # ============================================================
 
 START_DATE = datetime.strptime(
-    os.getenv(
-        "NEWS_START_DATE",
-        "2026-08-01"
-    ),
-    "%Y-%m-%d"
+    os.getenv("NEWS_START_DATE", "2026-08-01"),
+    "%Y-%m-%d",
 )
 
 END_DATE = datetime.strptime(
-    os.getenv(
-        "NEWS_END_DATE",
-        "2026-08-31"
-    ),
-    "%Y-%m-%d"
+    os.getenv("NEWS_END_DATE", "2026-08-31"),
+    "%Y-%m-%d",
 )
 
 
@@ -154,139 +115,59 @@ END_DATE = datetime.strptime(
 # ============================================================
 
 ENVIRONMENT_KEYWORDS = [
-
     # General
-    "alam sekitar",
-    "alam sekeliling",
-    "kelestarian",
-    "kelestarian alam",
-    "kelestarian alam sekitar",
-    "sustainability",
-    "sustainable",
-    "environment",
-    "environmental",
+    "alam sekitar", "alam sekeliling", "kelestarian",
+    "kelestarian alam", "kelestarian alam sekitar",
+    "sustainability", "sustainable", "environment", "environmental",
 
     # Climate
-    "perubahan iklim",
-    "krisis iklim",
-    "pemanasan global",
-    "tindakan iklim",
-    "risiko iklim",
-    "climate change",
-    "global warming",
-    "climate crisis",
-    "climate action",
+    "perubahan iklim", "krisis iklim", "pemanasan global",
+    "tindakan iklim", "risiko iklim", "climate change",
+    "global warming", "climate crisis", "climate action",
 
     # Carbon
-    "pelepasan karbon",
-    "karbon",
-    "neutral karbon",
-    "sifar bersih",
-    "gas rumah hijau",
-    "carbon emissions",
-    "carbon emission",
-    "carbon neutral",
-    "net zero",
-    "greenhouse gas",
-    "greenhouse gases",
+    "pelepasan karbon", "karbon", "neutral karbon", "sifar bersih",
+    "gas rumah hijau", "carbon emissions", "carbon emission",
+    "carbon neutral", "net zero", "greenhouse gas", "greenhouse gases",
 
     # Energy
-    "tenaga boleh diperbaharui",
-    "tenaga bersih",
-    "tenaga hijau",
-    "tenaga solar",
-    "tenaga angin",
-    "hidrogen",
-    "renewable energy",
-    "clean energy",
-    "green energy",
-    "solar energy",
-    "wind energy",
+    "tenaga boleh diperbaharui", "tenaga bersih", "tenaga hijau",
+    "tenaga solar", "tenaga angin", "hidrogen", "renewable energy",
+    "clean energy", "green energy", "solar energy", "wind energy",
 
     # Pollution / haze
-    "pencemaran",
-    "pencemaran udara",
-    "pencemaran air",
-    "pencemar",
-    "jerebu",
-    "jerebu rentas sempadan",
-    "kualiti udara",
-    "ipu",
-    "indeks pencemaran udara",
-    "air quality",
-    "air pollution",
-    "pollution",
-    "haze",
-    "transboundary haze",
+    "pencemaran", "pencemaran udara", "pencemaran air", "pencemar",
+    "jerebu", "jerebu rentas sempadan", "kualiti udara", "ipu",
+    "indeks pencemaran udara", "air quality", "air pollution",
+    "pollution", "haze", "transboundary haze",
 
     # Fire / hotspots
-    "kebakaran hutan",
-    "kebakaran tanah",
-    "pembakaran terbuka",
-    "titik panas",
-    "hotspot",
-    "hotspots",
-    "forest fire",
-    "forest fires",
-    "wildfire",
-    "wildfires",
-    "open burning",
+    "kebakaran hutan", "kebakaran tanah", "pembakaran terbuka",
+    "titik panas", "hotspot", "hotspots", "forest fire",
+    "forest fires", "wildfire", "wildfires", "open burning",
 
     # Waste
-    "sisa",
-    "sisa plastik",
-    "sisa makanan",
-    "sisa elektronik",
-    "e-waste",
-    "kitar semula",
-    "pengurusan sisa",
-    "recycling",
-    "waste management",
-    "plastic waste",
-    "food waste",
+    "sisa", "sisa plastik", "sisa makanan", "sisa elektronik",
+    "e-waste", "kitar semula", "pengurusan sisa", "recycling",
+    "waste management", "plastic waste", "food waste",
 
     # Nature
-    "biodiversiti",
-    "kepelbagaian biologi",
-    "pemuliharaan",
-    "ekosistem",
-    "hidupan liar",
-    "penebangan hutan",
-    "biodiversity",
-    "conservation",
-    "ecosystem",
-    "wildlife",
+    "biodiversiti", "kepelbagaian biologi", "pemuliharaan",
+    "ekosistem", "hidupan liar", "penebangan hutan",
+    "biodiversity", "conservation", "ecosystem", "wildlife",
     "deforestation",
 
     # Weather / disasters
-    "banjir",
-    "banjir kilat",
-    "kemarau",
-    "hakisan pantai",
-    "kenaikan paras laut",
-    "cuaca ekstrem",
-    "gelombang haba",
-    "el nino",
-    "el niño",
-    "la nina",
-    "la niña",
-    "flood",
-    "flooding",
-    "drought",
-    "sea level rise",
-    "extreme weather",
+    "banjir", "banjir kilat", "kemarau", "hakisan pantai",
+    "kenaikan paras laut", "cuaca ekstrem", "gelombang haba",
+    "el nino", "el niño", "la nina", "la niña", "flood",
+    "flooding", "drought", "sea level rise", "extreme weather",
     "heatwave",
 
     # Green development
-    "bangunan hijau",
-    "pengangkutan mampan",
-    "kenderaan elektrik",
-    "kewangan hijau",
-    "green building",
-    "sustainable transport",
-    "electric vehicle",
-    "electric vehicles",
-    "green finance"
+    "bangunan hijau", "pengangkutan mampan", "kenderaan elektrik",
+    "kewangan hijau", "green building", "sustainable transport",
+    "electric vehicle", "electric vehicles", "green finance",
 ]
 
 
@@ -295,12 +176,8 @@ ENVIRONMENT_KEYWORDS = [
 # ============================================================
 
 TARGET_COUNTRIES = {
-    "Malaysia",
-    "Singapore",
-    "Indonesia",
-    "Thailand",
-    "Philippines",
-    "Brunei"
+    "Malaysia", "Singapore", "Indonesia",
+    "Thailand", "Philippines", "Brunei",
 }
 
 
@@ -309,79 +186,38 @@ TARGET_COUNTRIES = {
 # ============================================================
 
 COUNTRY_KEYWORDS = {
-
     "Malaysia": [
-        "malaysia",
-        "malaysian",
-        "malaysians",
-        "kuala lumpur",
-        "putrajaya",
-        "selangor",
-        "johor",
-        "sabah",
-        "sarawak",
-        "penang",
-        "pulau pinang",
-        "kelantan",
-        "terengganu",
-        "pahang",
-        "perak",
-        "kedah",
-        "melaka",
-        "malacca",
-        "negeri sembilan",
-        "kuching",
-        "miri",
-        "bintulu",
-        "sibu",
-        "serian",
-        "samarahan",
-        "sri aman",
-        "sarikei",
-        "mukah",
-        "limbang"
+        "malaysia", "malaysian", "malaysians", "kuala lumpur",
+        "putrajaya", "selangor", "johor", "sabah", "sarawak",
+        "penang", "pulau pinang", "kelantan", "terengganu",
+        "pahang", "perak", "kedah", "melaka", "malacca",
+        "negeri sembilan", "kuching", "miri", "bintulu", "sibu",
+        "serian", "samarahan", "sri aman", "sarikei", "mukah",
+        "limbang",
     ],
 
     "Singapore": [
-        "singapore",
-        "singapura",
-        "singaporean"
+        "singapore", "singapura", "singaporean",
     ],
 
     "Indonesia": [
-        "indonesia",
-        "indonesian",
-        "jakarta",
-        "kalimantan",
-        "sumatra",
-        "sumatera",
-        "jawa",
-        "java",
-        "kalimantan barat",
-        "kalimantan tengah",
-        "kalimantan selatan"
+        "indonesia", "indonesian", "jakarta", "kalimantan",
+        "sumatra", "sumatera", "jawa", "java", "kalimantan barat",
+        "kalimantan tengah", "kalimantan selatan",
     ],
 
     "Philippines": [
-        "philippines",
-        "philippine",
-        "filipino",
-        "filipina",
-        "manila"
+        "philippines", "philippine", "filipino", "filipina", "manila",
     ],
 
     "Thailand": [
-        "thailand",
-        "thai",
-        "bangkok"
+        "thailand", "thai", "bangkok",
     ],
 
     "Brunei": [
-        "brunei",
-        "brunei darussalam",
-        "bruneian",
-        "bandar seri begawan"
-    ]
+        "brunei", "brunei darussalam", "bruneian",
+        "bandar seri begawan",
+    ],
 }
 
 
@@ -390,65 +226,41 @@ COUNTRY_KEYWORDS = {
 # ============================================================
 
 HEADERS = {
-
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/151.0.0.0 Safari/537.36"
     ),
-
     "Accept": (
         "text/html,application/xhtml+xml,"
         "application/xml;q=0.9,*/*;q=0.8"
-    )
+    ),
 }
 
-
-# Reuse the same TCP connection where possible.
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
 
 # ============================================================
-# CLEAN URL
+# URL HELPERS
 # ============================================================
 
 def clean_url(url):
-
     parsed = urlparse(url)
+    cleaned = parsed._replace(query="", fragment="")
+    return urlunparse(cleaned).rstrip("/")
 
-    cleaned = parsed._replace(
-        query="",
-        fragment=""
-    )
-
-    return urlunparse(
-        cleaned
-    ).rstrip("/")
-
-
-# ============================================================
-# IS REAL NEWS ARTICLE?
-# ============================================================
 
 def is_article_url(url):
-
     parsed = urlparse(url)
-
     path = parsed.path.lower()
 
     excluded_parts = [
-        "/topic/",
-        "/video/",
-        "/search",
-        "/foto/",
-        "/infografik/",
-        "/rancangan/"
+        "/topic/", "/video/", "/search", "/foto/",
+        "/infografik/", "/rancangan/",
     ]
 
     for excluded in excluded_parts:
-
         if excluded in path:
             return False
 
@@ -458,214 +270,110 @@ def is_article_url(url):
         if part
     ]
 
-    # Category page:
-    # /berita-malaysia
-    #
-    # Article:
-    # /berita-malaysia/article-title
-
+    # Category: /berita-malaysia
+    # Article:  /berita-malaysia/article-title
     if len(path_parts) < 2:
         return False
 
-    if not path_parts[0].startswith(
-        "berita-"
-    ):
+    if not path_parts[0].startswith("berita-"):
         return False
 
     return True
 
 
 # ============================================================
-# PARSE DATE FROM TEXT
+# DATE HELPERS
 # ============================================================
 
 def parse_listing_date(text):
-
     if not text:
         return None
 
-    # Astro AWANI listing date:
-    # 29/08/2026
-
     match = re.search(
         r"\b(\d{2}/\d{2}/\d{4})\b",
-        text
+        text,
     )
 
     if not match:
         return None
 
     try:
-
         return datetime.strptime(
             match.group(1),
-            "%d/%m/%Y"
+            "%d/%m/%Y",
         )
 
     except ValueError:
-
         return None
 
 
-# ============================================================
-# FIND DATE ASSOCIATED WITH AN ARTICLE LINK
-# ============================================================
-#
-# Astro AWANI's topic pages contain the article title/link and
-# publication date inside nearby listing/card HTML.
-#
-# Instead of opening the article just to determine its date,
-# we walk upwards from the link and inspect nearby containers.
-# ============================================================
-
 def find_listing_date(link):
-
-    # --------------------------------------------------------
-    # First check the link itself / immediate parent.
-    # --------------------------------------------------------
-
-    candidates = [
-        link
-    ]
-
+    # Check the link and progressively larger parent containers.
+    candidates = [link]
     parent = link.parent
-
     levels = 0
 
-    while (
-        parent is not None
-        and
-        levels < 6
-    ):
-
-        candidates.append(
-            parent
-        )
-
+    while parent is not None and levels < 6:
+        candidates.append(parent)
         parent = parent.parent
-
         levels += 1
 
-    # --------------------------------------------------------
-    # Look for DD/MM/YYYY in progressively larger containers.
-    # --------------------------------------------------------
-
     for element in candidates:
-
         try:
-
-            text = element.get_text(
-                " ",
-                strip=True
-            )
-
+            text = element.get_text(" ", strip=True)
         except Exception:
-
             continue
 
-        listing_date = (
-            parse_listing_date(
-                text
-            )
-        )
+        listing_date = parse_listing_date(text)
 
         if listing_date is not None:
-
             return listing_date
 
-    # --------------------------------------------------------
-    # Backup:
-    # inspect nearby siblings.
-    # --------------------------------------------------------
-
+    # Backup: inspect nearby siblings.
     parent = link.parent
 
     if parent is not None:
-
-        for sibling in list(
-            parent.previous_siblings
-        )[:4]:
-
+        for sibling in list(parent.previous_siblings)[:4]:
             try:
-
-                if hasattr(
-                    sibling,
-                    "get_text"
-                ):
-
-                    text = sibling.get_text(
-                        " ",
-                        strip=True
-                    )
-
+                if hasattr(sibling, "get_text"):
+                    text = sibling.get_text(" ", strip=True)
                 else:
+                    text = str(sibling)
 
-                    text = str(
-                        sibling
-                    )
-
-                listing_date = (
-                    parse_listing_date(
-                        text
-                    )
-                )
+                listing_date = parse_listing_date(text)
 
                 if listing_date:
-
                     return listing_date
 
             except Exception:
-
                 pass
 
-        for sibling in list(
-            parent.next_siblings
-        )[:4]:
-
+        for sibling in list(parent.next_siblings)[:4]:
             try:
-
-                if hasattr(
-                    sibling,
-                    "get_text"
-                ):
-
-                    text = sibling.get_text(
-                        " ",
-                        strip=True
-                    )
-
+                if hasattr(sibling, "get_text"):
+                    text = sibling.get_text(" ", strip=True)
                 else:
+                    text = str(sibling)
 
-                    text = str(
-                        sibling
-                    )
-
-                listing_date = (
-                    parse_listing_date(
-                        text
-                    )
-                )
+                listing_date = parse_listing_date(text)
 
                 if listing_date:
-
                     return listing_date
 
             except Exception:
-
                 pass
 
     return None
 
 
 # ============================================================
-# EXTRACT DATE-FILTERED ARTICLE URLS FROM TOPIC PAGE
+# EXTRACT DATE-FILTERED ARTICLE URLS
 # ============================================================
 
 def extract_candidate_urls_from_topic(html):
-
     soup = BeautifulSoup(
         html,
-        "html.parser"
+        "html.parser",
     )
 
     candidates = {}
@@ -674,78 +382,46 @@ def extract_candidate_urls_from_topic(html):
     links_with_date = 0
     in_range = 0
 
-    for link in soup.find_all(
-        "a",
-        href=True
-    ):
-
-        href = link.get(
-            "href"
-        )
+    for link in soup.find_all("a", href=True):
+        href = link.get("href")
 
         if not href:
             continue
 
         full_url = clean_url(
-            urljoin(
-                BASE_URL,
-                href
-            )
+            urljoin(BASE_URL, href)
         )
 
-        if not full_url.startswith(
-            BASE_URL
-        ):
+        if not full_url.startswith(BASE_URL):
             continue
 
-        if not is_article_url(
-            full_url
-        ):
+        if not is_article_url(full_url):
             continue
 
         article_links_found += 1
 
-        # ----------------------------------------------------
-        # IMPORTANT OPTIMISATION
-        #
-        # Determine the date from the TOPIC PAGE.
-        # We have not downloaded the article itself.
-        # ----------------------------------------------------
-
-        listing_date = (
-            find_listing_date(
-                link
-            )
-        )
+        # Determine the date from the topic page before downloading
+        # the full article.
+        listing_date = find_listing_date(link)
 
         if listing_date is None:
             continue
 
         links_with_date += 1
 
-        # ----------------------------------------------------
-        # Only retain articles within requested month.
-        # ----------------------------------------------------
-
-        if not (
-            START_DATE
-            <= listing_date
-            <= END_DATE
-        ):
+        if not START_DATE <= listing_date <= END_DATE:
             continue
 
         in_range += 1
 
-        # URL used as dictionary key = automatic deduplication.
-        candidates[
-            full_url
-        ] = listing_date
+        # URL dictionary key automatically deduplicates candidates.
+        candidates[full_url] = listing_date
 
     return (
         candidates,
         article_links_found,
         links_with_date,
-        in_range
+        in_range,
     )
 
 
@@ -754,138 +430,70 @@ def extract_candidate_urls_from_topic(html):
 # ============================================================
 
 def discover_topic_articles():
-
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "DISCOVERING AUGUST CANDIDATES"
-    )
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("DISCOVERING MONTHLY CANDIDATES")
+    print("======================================")
 
     all_candidates = {}
-
     successful_topics = 0
 
     for index, slug in enumerate(
         TOPIC_SLUGS,
-        start=1
+        start=1,
     ):
-
-        topic_url = (
-            f"{BASE_URL}/topic/{slug}"
-        )
+        topic_url = f"{BASE_URL}/topic/{slug}"
 
         print()
-        print(
-            f"[{index}/{len(TOPIC_SLUGS)}] "
-            f"Topic: {slug}"
-        )
+        print(f"[{index}/{len(TOPIC_SLUGS)}] Topic: {slug}")
 
         try:
-
             response = SESSION.get(
                 topic_url,
-                timeout=20
+                timeout=20,
             )
 
-            print(
-                "  Status:",
-                response.status_code
-            )
+            print("  Status:", response.status_code)
 
             if response.status_code != 200:
-
-                print(
-                    "  Topic unavailable - skipped"
-                )
-
+                print("  Topic unavailable - skipped")
                 continue
 
             (
                 candidates,
                 total_links,
                 links_with_date,
-                in_range
-            ) = (
-                extract_candidate_urls_from_topic(
-                    response.text
-                )
+                in_range,
+            ) = extract_candidate_urls_from_topic(
+                response.text
             )
 
-            print(
-                f"  Article links visible: "
-                f"{total_links}"
-            )
-
-            print(
-                f"  Links with listing date: "
-                f"{links_with_date}"
-            )
-
-            print(
-                f"  Articles in requested month: "
-                f"{in_range}"
-            )
+            print(f"  Article links visible: {total_links}")
+            print(f"  Links with listing date: {links_with_date}")
+            print(f"  Articles in requested month: {in_range}")
 
             if total_links > 0:
-
                 successful_topics += 1
 
-            before = len(
-                all_candidates
-            )
+            before = len(all_candidates)
+            all_candidates.update(candidates)
+            added = len(all_candidates) - before
 
-            all_candidates.update(
-                candidates
-            )
+            print(f"  New unique monthly candidates: {added}")
 
-            added = (
-                len(all_candidates)
-                - before
-            )
-
-            print(
-                f"  New unique monthly candidates: "
-                f"{added}"
-            )
-
-            # Only one request was made for this topic page.
-            time.sleep(
-                0.25
-            )
+            time.sleep(0.25)
 
         except Exception as e:
-
-            print(
-                "  Error:",
-                e
-            )
+            print("  Error:", e)
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "DISCOVERY COMPLETE"
-    )
-    print(
-        "======================================"
-    )
-
-    print(
-        "Working topic pages:",
-        successful_topics
-    )
-
+    print("======================================")
+    print("DISCOVERY COMPLETE")
+    print("======================================")
+    print("Working topic pages:", successful_topics)
     print(
         "Unique articles in requested month:",
-        len(
-            all_candidates
-        )
+        len(all_candidates),
     )
 
     return all_candidates
@@ -894,88 +502,50 @@ def discover_topic_articles():
 # ============================================================
 # EXTRACT FULL ARTICLE DATE
 # ============================================================
-#
-# We still verify the date after downloading the candidate.
-# The listing date is used to avoid unnecessary requests.
-# ============================================================
 
 def extract_published_date(soup):
-
     # article:published_time
-
     meta = soup.find(
         "meta",
-        attrs={
-            "property":
-                "article:published_time"
-        }
+        attrs={"property": "article:published_time"},
     )
 
-    if (
-        meta
-        and
-        meta.get(
-            "content"
-        )
-    ):
-
+    if meta and meta.get("content"):
         try:
-
-            dt = pd.to_datetime(
-                meta["content"]
-            )
+            dt = pd.to_datetime(meta["content"])
 
             return (
                 dt
                 .to_pydatetime()
-                .replace(
-                    tzinfo=None
-                )
+                .replace(tzinfo=None)
             )
 
         except Exception:
-
             pass
 
     # <time datetime="">
-
-    time_tag = soup.find(
-        "time"
-    )
+    time_tag = soup.find("time")
 
     if time_tag:
-
-        datetime_value = (
-            time_tag.get(
-                "datetime"
-            )
-        )
+        datetime_value = time_tag.get("datetime")
 
         if datetime_value:
-
             try:
-
-                dt = pd.to_datetime(
-                    datetime_value
-                )
+                dt = pd.to_datetime(datetime_value)
 
                 return (
                     dt
                     .to_pydatetime()
-                    .replace(
-                        tzinfo=None
-                    )
+                    .replace(tzinfo=None)
                 )
 
             except Exception:
-
                 pass
 
-    # Text date
-
+    # Text date.
     page_text = soup.get_text(
         " ",
-        strip=True
+        strip=True,
     )
 
     match = re.search(
@@ -983,38 +553,32 @@ def extract_published_date(soup):
         r"\s*\|\s*"
         r"\d{1,2}:\d{2}"
         r"\s*MYT\b",
-        page_text
+        page_text,
     )
 
     if match:
-
         try:
-
             return datetime.strptime(
                 match.group(1),
-                "%d/%m/%Y"
+                "%d/%m/%Y",
             )
 
         except Exception:
-
             pass
 
     match = re.search(
         r"\b(\d{2}/\d{2}/\d{4})\b",
-        page_text
+        page_text,
     )
 
     if match:
-
         try:
-
             return datetime.strptime(
                 match.group(1),
-                "%d/%m/%Y"
+                "%d/%m/%Y",
             )
 
         except Exception:
-
             pass
 
     return None
@@ -1025,71 +589,39 @@ def extract_published_date(soup):
 # ============================================================
 
 def extract_article_text(soup):
-
     paragraphs = []
 
-    article_container = soup.find(
-        "article"
-    )
+    article_container = soup.find("article")
 
     if article_container:
-
-        paragraph_tags = (
-            article_container.find_all(
-                "p"
-            )
-        )
-
+        paragraph_tags = article_container.find_all("p")
     else:
-
-        paragraph_tags = (
-            soup.find_all(
-                "p"
-            )
-        )
+        paragraph_tags = soup.find_all("p")
 
     unwanted_phrases = [
-
-        "dapatkan berita terkini",
-        "newsletter",
-        "advertisement",
-        "hak cipta",
-        "all rights reserved",
-        "topic berkaitan",
-        "must watch video",
-        "astro awani network",
-        "ikuti kami",
-        "langgan"
+        "dapatkan berita terkini", "newsletter", "advertisement",
+        "hak cipta", "all rights reserved", "topic berkaitan",
+        "must watch video", "astro awani network", "ikuti kami",
+        "langgan",
     ]
 
     for p in paragraph_tags:
-
-        text = p.get_text(
-            " ",
-            strip=True
-        )
+        text = p.get_text(" ", strip=True)
 
         if len(text) < 30:
             continue
 
-        lower_text = (
-            text.lower()
-        )
+        lower_text = text.lower()
 
         if any(
             phrase in lower_text
             for phrase in unwanted_phrases
         ):
-
             continue
 
-        paragraphs.append(
-            text
-        )
+        paragraphs.append(text)
 
-    return " ".join(
-        paragraphs
-    )
+    return " ".join(paragraphs)
 
 
 # ============================================================
@@ -1097,181 +629,114 @@ def extract_article_text(soup):
 # ============================================================
 
 def scrape_article(url):
-
     try:
-
         response = SESSION.get(
             url,
-            timeout=20
+            timeout=20,
         )
 
         if response.status_code != 200:
-
             print(
                 "  HTTP error:",
-                response.status_code
+                response.status_code,
             )
-
             return None
 
         soup = BeautifulSoup(
             response.text,
-            "html.parser"
+            "html.parser",
         )
 
         # ----------------------------------------------------
         # TITLE
         # ----------------------------------------------------
 
-        h1 = soup.find(
-            "h1"
-        )
+        h1 = soup.find("h1")
 
         if not h1:
-
-            print(
-                "  No title found"
-            )
-
+            print("  No title found")
             return None
 
         title = h1.get_text(
             " ",
-            strip=True
+            strip=True,
         )
 
         # ----------------------------------------------------
         # DATE
         # ----------------------------------------------------
 
-        published_date = (
-            extract_published_date(
-                soup
-            )
+        published_date = extract_published_date(
+            soup
         )
 
         if published_date is None:
-
-            print(
-                "  No publication date found"
-            )
-
+            print("  No publication date found")
             return None
 
         # ----------------------------------------------------
         # TEXT
         # ----------------------------------------------------
 
-        article_text = (
-            extract_article_text(
-                soup
-            )
+        article_text = extract_article_text(
+            soup
         )
 
         if len(article_text) < 250:
-
-            print(
-                "  Too little usable article text"
-            )
-
+            print("  Too little usable article text")
             return None
 
         return {
-
-            "title":
-                title,
-
-            "source":
-                "Astro AWANI",
-
-            "published_at":
-                published_date,
-
-            "url":
-                clean_url(
-                    url
-                ),
-
-            "article_text":
-                article_text
+            "title": title,
+            "source": "Astro AWANI",
+            "published_at": published_date,
+            "url": clean_url(url),
+            "article_text": article_text,
         }
 
     except Exception as e:
-
         print(
             "  Error scraping article:",
-            e
+            e,
         )
-
         return None
 
 
 # ============================================================
-# FIND ENVIRONMENT KEYWORDS
+# ENVIRONMENT AND COUNTRY DETECTION
 # ============================================================
 
 def find_environment_keywords(text):
-
     text = text.lower()
-
     matches = []
 
     for keyword in ENVIRONMENT_KEYWORDS:
-
         pattern = (
             r"\b"
-            + re.escape(
-                keyword.lower()
-            )
+            + re.escape(keyword.lower())
             + r"\b"
         )
 
-        if re.search(
-            pattern,
-            text
-        ):
-
-            matches.append(
-                keyword
-            )
+        if re.search(pattern, text):
+            matches.append(keyword)
 
     return matches
 
 
-# ============================================================
-# FIND COUNTRIES
-# ============================================================
-
 def find_countries(text):
-
     text = text.lower()
-
     countries_found = []
 
-    for (
-        country,
-        keywords
-    ) in COUNTRY_KEYWORDS.items():
-
+    for country, keywords in COUNTRY_KEYWORDS.items():
         for keyword in keywords:
-
             pattern = (
                 r"\b"
-                + re.escape(
-                    keyword.lower()
-                )
+                + re.escape(keyword.lower())
                 + r"\b"
             )
 
-            if re.search(
-                pattern,
-                text
-            ):
-
-                countries_found.append(
-                    country
-                )
-
+            if re.search(pattern, text):
+                countries_found.append(country)
                 break
 
     return countries_found
@@ -1282,63 +747,40 @@ def find_countries(text):
 # ============================================================
 
 def get_existing_urls():
-
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "CHECKING EXISTING ARTICLES IN SUPABASE"
-    )
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("CHECKING EXISTING ARTICLES IN SUPABASE")
+    print("======================================")
 
     existing_urls = set()
-
     batch_size = 1000
     start = 0
 
     try:
-
         while True:
-
             response = (
                 supabase
-                .table(
-                    RAW_TABLE
-                )
-                .select(
-                    "url"
-                )
+                .table(RAW_TABLE)
+                .select("url")
                 .eq(
                     "source_country",
-                    SOURCE_COUNTRY
+                    SOURCE_COUNTRY,
                 )
                 .range(
                     start,
-                    start + batch_size - 1
+                    start + batch_size - 1,
                 )
                 .execute()
             )
 
-            rows = (
-                response.data
-                or []
-            )
+            rows = response.data or []
 
             for row in rows:
-
-                url = row.get(
-                    "url"
-                )
+                url = row.get("url")
 
                 if url:
-
                     existing_urls.add(
-                        clean_url(
-                            url
-                        )
+                        clean_url(url)
                     )
 
             if len(rows) < batch_size:
@@ -1354,16 +796,11 @@ def get_existing_urls():
         return existing_urls
 
     except Exception as e:
-
         print(
             "Error reading existing URLs "
             "from Supabase:"
         )
-
-        print(
-            e
-        )
-
+        print(e)
         raise
 
 
@@ -1373,24 +810,14 @@ def get_existing_urls():
 
 def process_candidates(
     candidates,
-    existing_urls
+    existing_urls,
 ):
-
     results = []
 
-    # --------------------------------------------------------
-    # Remove URLs already in Supabase BEFORE downloading them.
-    # --------------------------------------------------------
-
+    # Remove URLs already in Supabase before downloading them.
     new_candidates = {
-
         url: listing_date
-
-        for (
-            url,
-            listing_date
-        ) in candidates.items()
-
+        for url, listing_date in candidates.items()
         if url not in existing_urls
     }
 
@@ -1400,29 +827,14 @@ def process_candidates(
     )
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "PROCESSING MONTHLY CANDIDATES"
-    )
-    print(
-        "======================================"
-    )
-
-    print(
-        "Monthly candidates discovered:",
-        len(candidates)
-    )
-
-    print(
-        "Already in Supabase:",
-        already_existing
-    )
-
+    print("======================================")
+    print("PROCESSING MONTHLY CANDIDATES")
+    print("======================================")
+    print("Monthly candidates discovered:", len(candidates))
+    print("Already in Supabase:", already_existing)
     print(
         "Full articles that need downloading:",
-        len(new_candidates)
+        len(new_candidates),
     )
 
     no_environment = 0
@@ -1430,120 +842,73 @@ def process_candidates(
     failed = 0
     date_mismatch = 0
 
-    total = len(
-        new_candidates
-    )
+    total = len(new_candidates)
 
     for index, (
         url,
-        listing_date
+        listing_date,
     ) in enumerate(
         new_candidates.items(),
-        start=1
+        start=1,
     ):
-
         print()
-        print(
-            f"[{index}/{total}]"
-        )
-
-        print(
-            url
-        )
-
+        print(f"[{index}/{total}]")
+        print(url)
         print(
             "  Listing date:",
-            listing_date.date()
+            listing_date.date(),
         )
 
-        article = scrape_article(
-            url
-        )
+        article = scrape_article(url)
 
         if article is None:
-
             failed += 1
-
-            time.sleep(
-                0.3
-            )
-
+            time.sleep(0.3)
             continue
 
-        published_date = (
-            article[
-                "published_at"
-            ]
-        )
+        published_date = article["published_at"]
 
         print(
             "  Verified article date:",
-            published_date.date()
+            published_date.date(),
         )
 
-        # ----------------------------------------------------
-        # Verify date again from actual article.
-        # ----------------------------------------------------
-
-        if not (
-            START_DATE
-            <= published_date
-            <= END_DATE
-        ):
-
+        # Verify the date again using the actual article.
+        if not START_DATE <= published_date <= END_DATE:
             print(
                 "  Listing/article date mismatch "
                 "- skipped"
             )
 
             date_mismatch += 1
-
-            time.sleep(
-                0.3
-            )
-
+            time.sleep(0.3)
             continue
 
         combined_text = (
-            article[
-                "title"
-            ]
+            article["title"]
             + " "
-            + article[
-                "article_text"
-            ]
+            + article["article_text"]
         )
 
-        environment_matches = (
-            find_environment_keywords(
-                combined_text
-            )
+        environment_matches = find_environment_keywords(
+            combined_text
         )
 
-        country_matches = (
-            find_countries(
-                combined_text
-            )
+        country_matches = find_countries(
+            combined_text
         )
 
         # ----------------------------------------------------
         # ENVIRONMENT FILTER
         # ----------------------------------------------------
 
-        if len(
-            environment_matches
-        ) == 0:
-
+        if len(environment_matches) == 0:
             print(
                 "  No environmental keyword match"
             )
 
             no_environment += 1
-
-            time.sleep(
-                0.3
-            )
-
+            time.sleep(0.3)
             continue
 
         # ----------------------------------------------------
@@ -1551,128 +916,62 @@ def process_candidates(
         # ----------------------------------------------------
 
         target_country_matches = [
-
             country
-
             for country in country_matches
-
             if country in TARGET_COUNTRIES
         ]
 
-        if len(
-            target_country_matches
-        ) == 0:
-
+        if len(target_country_matches) == 0:
             print(
                 "  No target ASEAN country match"
             )
 
             no_country += 1
-
-            time.sleep(
-                0.3
-            )
-
+            time.sleep(0.3)
             continue
 
         # ----------------------------------------------------
         # MATCH
         # ----------------------------------------------------
 
-        article[
-            "published_at"
-        ] = published_date.strftime(
-            "%Y-%m-%d"
+        article["published_at"] = (
+            published_date.strftime("%Y-%m-%d")
         )
 
-        article[
-            "environment_keywords"
-        ] = ", ".join(
+        article["environment_keywords"] = ", ".join(
             environment_matches
         )
 
-        article[
-            "countries"
-        ] = ", ".join(
+        article["countries"] = ", ".join(
             target_country_matches
         )
 
-        results.append(
-            article
-        )
+        results.append(article)
 
-        print(
-            "  MATCH"
-        )
-
+        print("  MATCH")
         print(
             "  Countries:",
-            ", ".join(
-                target_country_matches
-            )
+            ", ".join(target_country_matches),
         )
-
         print(
             "  Environment:",
-            ", ".join(
-                environment_matches
-            )
+            ", ".join(environment_matches),
         )
 
-        time.sleep(
-            0.3
-        )
+        time.sleep(0.3)
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "PROCESSING SUMMARY"
-    )
-    print(
-        "======================================"
-    )
-
-    print(
-        "Monthly candidates:",
-        len(candidates)
-    )
-
-    print(
-        "Already in Supabase:",
-        already_existing
-    )
-
-    print(
-        "Downloaded:",
-        total
-    )
-
-    print(
-        "Failed to scrape:",
-        failed
-    )
-
-    print(
-        "Date mismatches:",
-        date_mismatch
-    )
-
-    print(
-        "No environment match:",
-        no_environment
-    )
-
-    print(
-        "No ASEAN country match:",
-        no_country
-    )
-
-    print(
-        "Final matches:",
-        len(results)
-    )
+    print("======================================")
+    print("PROCESSING SUMMARY")
+    print("======================================")
+    print("Monthly candidates:", len(candidates))
+    print("Already in Supabase:", already_existing)
+    print("Downloaded:", total)
+    print("Failed to scrape:", failed)
+    print("Date mismatches:", date_mismatch)
+    print("No environment match:", no_environment)
+    print("No ASEAN country match:", no_country)
+    print("Final matches:", len(results))
 
     return results
 
@@ -1681,40 +980,22 @@ def process_candidates(
 # INSERT INTO SUPABASE
 # ============================================================
 
-def insert_articles_to_supabase(
-    results
-):
-
+def insert_articles_to_supabase(results):
     if len(results) == 0:
-
         print()
-        print(
-            "No matching new articles found."
-        )
-
+        print("No matching new articles found.")
         return 0
 
-    # --------------------------------------------------------
     # Final in-memory URL deduplication.
-    # --------------------------------------------------------
-
     unique_results = {}
 
     for article in results:
-
         url = clean_url(
-            article[
-                "url"
-            ]
+            article["url"]
         )
 
-        article[
-            "url"
-        ] = url
-
-        unique_results[
-            url
-        ] = article
+        article["url"] = url
+        unique_results[url] = article
 
     results = list(
         unique_results.values()
@@ -1723,60 +1004,21 @@ def insert_articles_to_supabase(
     rows_to_insert = []
 
     for article in results:
-
-        rows_to_insert.append(
-            {
-                "source_country":
-                    SOURCE_COUNTRY,
-
-                "title":
-                    article[
-                        "title"
-                    ],
-
-                "source":
-                    article[
-                        "source"
-                    ],
-
-                "published_at":
-                    article[
-                        "published_at"
-                    ],
-
-                "countries":
-                    article[
-                        "countries"
-                    ],
-
-                "environment_keywords":
-                    article[
-                        "environment_keywords"
-                    ],
-
-                "article_text":
-                    article[
-                        "article_text"
-                    ],
-
-                "url":
-                    article[
-                        "url"
-                    ]
-            }
-        )
+        rows_to_insert.append({
+            "source_country": SOURCE_COUNTRY,
+            "title": article["title"],
+            "source": article["source"],
+            "published_at": article["published_at"],
+            "countries": article["countries"],
+            "environment_keywords": article["environment_keywords"],
+            "article_text": article["article_text"],
+            "url": article["url"],
+        })
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "SAVING TO SUPABASE"
-    )
-    print(
-        "======================================"
-    )
-
+    print("======================================")
+    print("SAVING TO SUPABASE")
+    print("======================================")
     print(
         f"{len(rows_to_insert)} new articles "
         "ready for insertion."
@@ -1786,31 +1028,23 @@ def insert_articles_to_supabase(
     inserted_count = 0
 
     try:
-
         for start in range(
             0,
             len(rows_to_insert),
-            batch_size
+            batch_size,
         ):
-
             batch = rows_to_insert[
-                start:
-                start + batch_size
+                start:start + batch_size
             ]
 
             response = (
                 supabase
-                .table(
-                    RAW_TABLE
-                )
-                .insert(
-                    batch
-                )
+                .table(RAW_TABLE)
+                .insert(batch)
                 .execute()
             )
 
             if response.data:
-
                 inserted_count += len(
                     response.data
                 )
@@ -1822,17 +1056,12 @@ def insert_articles_to_supabase(
             )
 
     except Exception as e:
-
         print()
         print(
             "Error inserting articles "
             "into Supabase:"
         )
-
-        print(
-            e
-        )
-
+        print(e)
         raise
 
     return inserted_count
@@ -1843,98 +1072,54 @@ def insert_articles_to_supabase(
 # ============================================================
 
 def main():
-
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "ASTRO AWANI ASEAN ENVIRONMENT SCRAPER"
-    )
-    print(
-        "======================================"
-    )
-
-    print(
-        "Start date:",
-        START_DATE.date()
-    )
-
-    print(
-        "End date:",
-        END_DATE.date()
-    )
-
-    print(
-        "Source country:",
-        SOURCE_COUNTRY
-    )
-
-    print(
-        "Topic pages checked:",
-        len(TOPIC_SLUGS)
-    )
-
+    print("======================================")
+    print("ASTRO AWANI ASEAN ENVIRONMENT SCRAPER")
+    print("======================================")
+    print("Start date:", START_DATE.date())
+    print("End date:", END_DATE.date())
+    print("Source country:", SOURCE_COUNTRY)
+    print("Topic pages checked:", len(TOPIC_SLUGS))
     print(
         "Target countries:",
-        ", ".join(
-            sorted(
-                TARGET_COUNTRIES
-            )
-        )
+        ", ".join(sorted(TARGET_COUNTRIES)),
     )
 
     # ========================================================
-    # STEP 1
-    # GET EXISTING SUPABASE URLS
+    # STEP 1: GET EXISTING SUPABASE URLS
     # ========================================================
 
-    existing_urls = (
-        get_existing_urls()
-    )
+    existing_urls = get_existing_urls()
 
     # ========================================================
-    # STEP 2
-    # DOWNLOAD TOPIC PAGES ONLY
-    #
-    # Extract URL + publication date directly from listing.
+    # STEP 2: DISCOVER MONTHLY ARTICLES
     # ========================================================
 
-    candidates = (
-        discover_topic_articles()
-    )
+    candidates = discover_topic_articles()
 
     if len(candidates) == 0:
-
         print()
         print(
             "No articles in the requested date range "
             "were discovered from the topic pages."
         )
-
         return
 
     # ========================================================
-    # STEP 3
-    # ONLY DOWNLOAD NEW AUGUST ARTICLES
+    # STEP 3: DOWNLOAD AND FILTER NEW ARTICLES
     # ========================================================
 
-    results = (
-        process_candidates(
-            candidates,
-            existing_urls
-        )
+    results = process_candidates(
+        candidates,
+        existing_urls,
     )
 
     # ========================================================
-    # STEP 4
-    # INSERT MATCHES
+    # STEP 4: INSERT MATCHES
     # ========================================================
 
-    inserted_count = (
-        insert_articles_to_supabase(
-            results
-        )
+    inserted_count = insert_articles_to_supabase(
+        results
     )
 
     # ========================================================
@@ -1942,36 +1127,22 @@ def main():
     # ========================================================
 
     print()
-    print(
-        "======================================"
-    )
-    print(
-        "SCRAPING FINISHED"
-    )
-    print(
-        "======================================"
-    )
-
+    print("======================================")
+    print("SCRAPING FINISHED")
+    print("======================================")
     print(
         "Monthly candidate URLs discovered:",
-        len(candidates)
+        len(candidates),
     )
-
     print(
         "Matching new environmental articles:",
-        len(results)
+        len(results),
     )
-
     print(
         "New articles inserted into Supabase:",
-        inserted_count
+        inserted_count,
     )
-
-    print(
-        "Supabase table:",
-        RAW_TABLE
-    )
-
+    print("Supabase table:", RAW_TABLE)
     print()
 
 
@@ -1980,5 +1151,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
