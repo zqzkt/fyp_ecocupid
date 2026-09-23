@@ -382,6 +382,9 @@ The job:
 5. Samples up to 10 replies from each of the top 5 conversations.
 6. Fetches missing impression counts through individual tweet lookups.
 7. Uploads users, posts, and replies directly to Supabase.
+8. The shared Supabase upload function runs `scripts/cleaning/clean_social.py`,
+    which refreshes `clean_posts` and `clean_comments` from all available raw
+    platform tables.
 
 The monthly run has a `$5.00` maximum estimate. With user expansions disabled, its configured maximum is 250 post/detail reads, costing `$2.50` at the current rates. This is a large bounded monthly sample, not an unlimited export: obtaining every post from a busy month would require a larger budget and may require X full-archive access.
 
@@ -487,3 +490,64 @@ The key design choices are:
 - Primary-key upserts make retries safe.
 - Cost checks happen before API calls.
 - Replies and users are collected in intentionally small, configurable samples.
+
+## 17. Cross-Platform Cleaning
+
+Raw data remains in the platform-specific tables, while sentiment analysis uses
+two shared tables:
+
+- `clean_posts`: original posts/videos from X, Reddit, YouTube, or Instagram.
+- `clean_comments`: replies/comments from X, Reddit, YouTube, or Instagram.
+
+The cleaning script is [scripts/cleaning/clean_social.py](../scripts/cleaning/clean_social.py).
+It reads `x_posts`, `x_replies`, `reddit_posts`, `reddit_comments`,
+`youtube_videos`, `youtube_comments`, `instagram_posts`, and
+`instagram_comments`, then upserts normalized rows into the shared clean tables.
+Sources are safely ignored when their raw tables are empty.
+
+### Fields kept
+
+The shared schema keeps fields needed for the proposal's sentiment-analysis
+workflow and for reproducibility:
+
+| Field | Purpose |
+| --- | --- |
+| `source_id`, `platform`, `source_type`, `source_table` | Trace each clean record back to its source without mixing platforms. |
+| `original_text`, `cleaned_text` | Preserve auditability while giving NLP a normalized input. |
+| `lang` | Language filtering and model selection. |
+| `inferred_country` | ASEAN comparison. |
+| `author_id` | Anonymous author-level grouping without storing profiles. |
+| `conversation_id`, `parent_source_id` | Reconstruct discussion structure. |
+| `created_at` | Time-based analysis and monthly grouping. |
+| `matched_keywords` | Topic-level analysis. |
+| Engagement counts and `impression_count` | Engagement and reach controls/covariates. |
+| `cleaned_at` | Track the cleaning version/time. |
+
+### Text cleaning rules
+
+For every post and comment:
+
+1. Remove `@mentions`.
+2. Replace emoji with square-bracket labels such as `[happy]`, `[sad]`, or `[seedling]`.
+3. Normalize repeated whitespace.
+4. Keep the original text separately; never overwrite raw data.
+
+Apply the schema once in the Supabase SQL Editor:
+
+```sql
+-- Run scripts/supabase/migrations/004_create_clean_social_tables.sql
+```
+
+Then run the cleaner from the repository root:
+
+```bash
+python scripts/cleaning/clean_social.py
+```
+
+The cleaner is idempotent: rerunning it updates the same `source_id` rows rather
+than creating duplicates. This requires the migration to be applied first.
+
+Every project upload through the shared Supabase pipeline runs this cleaner
+automatically after the raw upload has succeeded. If a future platform collector
+writes to `reddit_posts` or `reddit_comments` through the same pipeline, those
+rows will be included on that run.

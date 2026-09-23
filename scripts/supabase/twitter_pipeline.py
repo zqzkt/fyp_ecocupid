@@ -207,6 +207,7 @@ def sync_x_jsonl(out_dir: Path | None = None) -> dict[str, int]:
         "x_replies": upsert_batches(session, base_url, key, "x_replies", replies, "reply_id"),
     }
     print(json.dumps(counts, indent=2))
+    run_cleaner()
     return counts
 
 
@@ -249,7 +250,21 @@ def sync_x_rows(
         "x_replies": upsert_batches(session, base_url, key, "x_replies", projected_replies, "reply_id"),
     }
     print(json.dumps(counts, indent=2))
+    run_cleaner()
     return counts
+
+
+def run_cleaner() -> None:
+    """Refresh shared clean tables after a successful raw-data upload."""
+    cleaner = REPO_ROOT / "scripts" / "cleaning" / "clean_social.py"
+    print("Raw data uploaded; cleaning all available platform tables...")
+    try:
+        subprocess.run([sys.executable, str(cleaner)], cwd=REPO_ROOT, check=True)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Cleaning failed with exit code {error.returncode}; "
+            "raw rows remain stored, but clean tables may be incomplete."
+        ) from error
 
 
 def previous_month_window(reference: datetime | None = None) -> tuple[str, str]:
@@ -293,7 +308,6 @@ def run_monthly_job(reference: datetime | None = None, *, ignore_day_guard: bool
             f"Monthly X collection failed with exit code {error.returncode}; "
             "no monthly rows were uploaded by this run."
         ) from error
-
 
 if __name__ == "__main__":
     if "--monthly" in sys.argv[1:]:
