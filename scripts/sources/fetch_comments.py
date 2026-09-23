@@ -48,6 +48,10 @@ def main():
     except Exception as e:
         print(f"Error encountered when retrieving IDs: {e}")
 
+    from scripts.supabase.twitter_pipeline import run_cleaner
+
+    run_cleaner()
+
 def format_records(youtube_data):
     formatted_records = []
 
