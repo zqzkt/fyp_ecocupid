@@ -1391,7 +1391,7 @@ def select_diverse_posts_for_comments(
     )
 
     # Countries with fewer available candidates go first so they
-    # are less likely to be excluded by the overall 15-post cap.
+    # are less likely to be excluded by the overall max_total cap.
     country_order = sorted(
         grouped_by_country,
         key=lambda country: (
