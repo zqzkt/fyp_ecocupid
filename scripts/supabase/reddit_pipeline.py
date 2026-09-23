@@ -158,4 +158,7 @@ def sync_reddit_data(
         "reddit_comments": upsert_batches(session, base_url, key, "reddit_comments", projected_comments, "comment_id"),
     }
     print(json.dumps(counts, indent=2))
+    from scripts.supabase.twitter_pipeline import run_cleaner
+
+    run_cleaner()
     return counts

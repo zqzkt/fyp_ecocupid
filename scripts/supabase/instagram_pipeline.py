@@ -93,7 +93,7 @@ def sync_instagram_data(
     ]
 
     session = requests.Session()
-    return {
+    counts = {
         "instagram_posts": upsert_batches(
             session, base_url, key, "instagram_posts", projected_posts, "post_id"
         ),
@@ -101,3 +101,7 @@ def sync_instagram_data(
             session, base_url, key, "instagram_comments", projected_comments, "comment_id"
         ),
     }
+    from scripts.supabase.twitter_pipeline import run_cleaner
+
+    run_cleaner()
+    return counts

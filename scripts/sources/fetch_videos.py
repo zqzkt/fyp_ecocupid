@@ -227,6 +227,10 @@ def main():
         except Exception as e:
             print(f"Error inserting data: {e}")
 
+    from scripts.supabase.twitter_pipeline import run_cleaner
+
+    run_cleaner()
+
 
 if __name__ == "__main__":
     main()
