@@ -223,3 +223,5 @@ __marimo__/
 
 # Additional files and directories to ignore
 data/raw/
+# Vscode interpreter
+.vscode/
