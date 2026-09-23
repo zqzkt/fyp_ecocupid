@@ -1,6 +1,10 @@
 apify-client
-lingua-language-detector
 pandas
 python-dotenv
 requests
 emoji>=2.16.0
+google-cloud-translate
+langdetect
+transformers<5
+sentencepiece
+torch

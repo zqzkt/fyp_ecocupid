@@ -358,9 +358,6 @@ if not comments_df.empty:
         )
 
 comments_df = comments_df[
-    comments_df["comment_text"].apply(is_english)
-].copy()
-comments_df = comments_df[
     comments_df["post_id"].isin(valid_post_ids)
 ].copy()
 

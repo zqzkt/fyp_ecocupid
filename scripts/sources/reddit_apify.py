@@ -233,7 +233,6 @@ posts_df["language_text"] = (
 comments_df["language_text"] = comments_df["body"].fillna("")
 
 posts_df = posts_df[posts_df["language_text"].apply(is_english)].copy()
-comments_df = comments_df[comments_df["language_text"].apply(is_english)].copy()
 
 valid_post_ids = set(posts_df["post_id"].dropna())
 comments_df = comments_df[
@@ -264,9 +263,10 @@ def append_unique_rows(new_df, csv_file, duplicate_column):
         else:
             existing_df["language_text"] = existing_df["body"].fillna("")
 
-        existing_df = existing_df[
-            existing_df["language_text"].apply(is_english)
-        ].copy()
+        if duplicate_column == "post_id":
+            existing_df = existing_df[
+                existing_df["language_text"].apply(is_english)
+            ].copy()
         existing_df.drop(columns=["language_text"], inplace=True)
         combined_df = pd.concat([existing_df, new_df], ignore_index=True)
     else:

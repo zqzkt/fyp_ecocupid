@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-import sys
+import os
 from importlib import import_module
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -19,6 +19,7 @@ BATCH_SIZE = 100
 PAGE_SIZE = 1000
 MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,50}", re.UNICODE)
 WHITESPACE_RE = re.compile(r"\s+")
+_translator = None
 VULGARITY_RE = re.compile(
     r"\b(?:motherfuck(?:er|ing|ed)?|fuck(?:er|ing|ed|s)?|shit(?:ty|ting|ted|s)?|"
     r"asshole(?:s)?|bitch(?:es|y)?|bastard(?:s)?|cunt(?:s)?|dick(?:head|s)?|"
@@ -26,7 +27,7 @@ VULGARITY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Keep high-signal fields for sentiment analysis, filtering, grouping, and auditability.
+# Keep high-signal fields for analysis, filtering, grouping, and auditability.
 CLEAN_COLUMNS = (
     "source_id",
     "platform",
@@ -80,6 +81,31 @@ def clean_text(text: str | None) -> str:
     return WHITESPACE_RE.sub(" ", text).strip()
 
 
+def translate_to_english(
+    text: str,
+    source_language: str | None = None,
+) -> tuple[str, str]:
+    """Detect the source language and translate comment text with Cloud Translation."""
+    global _translator
+    if _translator is None:
+        from google.cloud import translate_v2
+
+        _translator = translate_v2.Client()
+    options: dict[str, str] = {"target_language": "en"}
+    if source_language and source_language.lower() not in {"en", "und"}:
+        # X still labels Indonesian as "in"; Cloud Translation expects "id".
+        options["source_language"] = {"in": "id"}.get(
+            source_language.lower(), source_language
+        )
+    result = _translator.translate(text, **options)
+    detected_language = (
+        result.get("detectedSourceLanguage")
+        or source_language
+        or "und"
+    )
+    return str(result.get("translatedText") or text), str(detected_language)
+
+
 def first(row: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         if row.get(key) is not None:
@@ -97,15 +123,32 @@ def source_id(row: dict[str, Any], platform: str, source_type: str) -> str | Non
     return f"{platform}:{source_type}:{value}" if value else None
 
 
-def normalize_row(row: dict[str, Any], platform: str, source_type: str, source_table: str) -> dict[str, Any] | None:
+def normalize_row(
+    row: dict[str, Any],
+    platform: str,
+    source_type: str,
+    source_table: str,
+    *,
+    translate_comment: bool = False,
+) -> dict[str, Any] | None:
     identifier = source_id(row, platform, source_type)
-    original_text = first(row, "text", "body", "selftext", "comment", "caption", "title")
+    original_text = first(row, "text", "body", "selftext", "comment", "comment_text", "caption", "title")
     if platform == "youtube" and source_type == "post":
         title = str(row.get("title") or "").strip()
         description = str(row.get("description") or "").strip()
         original_text = "\n\n".join(part for part in (title, description) if part)
     if not identifier or original_text is None:
         return None
+    original_text = str(original_text)
+    lang = first(row, "lang", "language")
+    if translate_comment:
+        if not lang or str(lang).lower() == "und":
+            translated_text, detected_language = translate_to_english(original_text)
+            lang = detected_language
+            if str(lang).lower() != "en":
+                original_text = translated_text
+        elif str(lang).lower() != "en":
+            original_text, lang = translate_to_english(original_text, str(lang))
     likes = int(first(row, "like_count", "likeCount", "score", "ups") or 0)
     replies = int(first(row, "reply_count", "comments_count", "total_reply_count", "num_comments") or 0)
     reposts = int(first(row, "repost_count", "retweet_count") or 0)
@@ -117,14 +160,24 @@ def normalize_row(row: dict[str, Any], platform: str, source_type: str, source_t
         "source_id": identifier,
         "platform": platform,
         "source_type": source_type,
-        "original_text": str(original_text),
-        "cleaned_text": clean_text(str(original_text)),
-        "lang": first(row, "lang", "language"),
+        "original_text": str(first(row, "text", "body", "selftext", "comment", "comment_text", "caption", "title")),
+        "cleaned_text": clean_text(original_text),
+        "lang": lang,
         "inferred_country": first(row, "inferred_country", "country", "subreddit"),
         "author_id": first(row, "author_id", "user_id", "author", "author_fullname", "username"),
         "conversation_id": first(row, "conversation_id", "video_id", "media_id", "link_id", "post_id", "parent_post_id"),
         "parent_source_id": first(row, "parent_tweet_id", "parent_id", "parent_post_id"),
-        "created_at": first(row, "created_at", "created_utc", "timestamp", "published", "published_date"),
+        "created_at": first(
+            row,
+            "created_at",
+            "created_utc",
+            "timestamp",
+            "published",
+            "published_date",
+            "posted_at",
+            "comment_created_at",
+            "published_at",
+        ),
         "matched_keywords": first(row, "matched_keywords", "keywords") or [],
         "like_count": likes,
         "reply_count": replies,
@@ -201,7 +254,9 @@ def main() -> None:
             if parent_id is not None and str(parent_id) in post_countries:
                 comment["inferred_country"] = post_countries[str(parent_id)]
                 comment["country"] = post_countries[str(parent_id)]
-            normalized = normalize_row(comment, platform, "comment", comment_table)
+            normalized = normalize_row(
+                comment, platform, "comment", comment_table, translate_comment=True
+            )
             if normalized:
                 cleaned_comments.append(normalized)
         counts["clean_posts"] += upsert(session, base_url, key, "clean_posts", cleaned_posts)
