@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
-import unicodedata
+from importlib import import_module
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
 load_dotenv(REPO_ROOT / ".env")
+demojize = import_module("emoji").demojize
 
 BATCH_SIZE = 100
 PAGE_SIZE = 1000
@@ -49,36 +50,6 @@ CLEAN_COLUMNS = (
     "cleaned_at",
 )
 
-EMOJI_WORDS = {
-    "🙂": "happy",
-    "😊": "happy",
-    "😀": "grinning",
-    "😂": "joy",
-    "🤣": "laughing",
-    "😍": "love",
-    "🥰": "love",
-    "😢": "sad",
-    "😭": "crying",
-    "😡": "angry",
-    "😠": "angry",
-    "😞": "disappointed",
-    "😔": "sad",
-    "😮": "surprised",
-    "😱": "fearful",
-    "👍": "approval",
-    "👎": "disapproval",
-    "🙏": "gratitude",
-    "💚": "green heart",
-    "🌱": "seedling",
-    "🌍": "earth",
-    "🌎": "earth",
-    "🔥": "fire",
-    "💯": "emphasis",
-    "❤️": "love",
-    "❤": "love",
-}
-
-
 def credentials() -> tuple[str, str]:
     import os
 
@@ -98,18 +69,8 @@ def headers(key: str, *, write: bool = False) -> dict[str, str]:
     }
 
 
-def emoji_label(character: str) -> str:
-    return EMOJI_WORDS.get(character, unicodedata.name(character, "emoji").lower().replace(" ", "_"))
-
-
 def replace_emoji(text: str) -> str:
-    output: list[str] = []
-    for character in text:
-        if character in EMOJI_WORDS or "EMOJI" in unicodedata.name(character, "") or "FACE" in unicodedata.name(character, "") and ord(character) > 0x2000:
-            output.append(f"[{emoji_label(character)}]")
-        else:
-            output.append(character)
-    return "".join(output)
+    return demojize(text, delimiters=("[", "]"), language="en")
 
 
 def clean_text(text: str | None) -> str:

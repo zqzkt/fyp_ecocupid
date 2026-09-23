@@ -42,16 +42,6 @@ ASEAN_QUERY_TERMS = (
     "Singapore OR Malaysia OR Indonesia OR Philippines OR Thailand OR "
     'Brunei OR "Brunei Darussalam"'
 )
-KEYWORD_QUERY = (
-    '("climate change" OR sustainability OR "renewable energy" OR "plastic pollution") '
-    f"lang:en -is:retweet ({ASEAN_QUERY_TERMS})"
-)
-MATCH_KEYWORDS = (
-    "climate change",
-    "sustainability",
-    "renewable energy",
-    "plastic pollution",
-)
 
 COUNTRY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("Singapore", re.compile(r"\b(singapore|sgp?|lion city|nus|ntu|smu)\b", re.I)),
@@ -61,6 +51,20 @@ COUNTRY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("Thailand", re.compile(r"\b(thailand|bangkok|chiang mai|phuket)\b", re.I)),
     ("Brunei", re.compile(r"\b(brunei|brunei darussalam|bandar seri begawan)\b", re.I)),
 ]
+
+
+def build_keyword_query(keywords: list[str], country: str) -> str:
+    """Build one country-specific X query from Supabase topic keywords."""
+    keyword_terms = " OR ".join(
+        f'"{keyword.replace(chr(34), chr(92) + chr(34))}"' for keyword in keywords
+    )
+    query = f'({keyword_terms}) lang:en -is:retweet ("{country}")'
+    if len(query) > 512:
+        raise SystemExit(
+            f"Generated X query is {len(query)} characters; X allows at most 512. "
+            "Reduce monthly_topic_stats rows or keyword phrase length."
+        )
+    return query
 
 # P0 fields only. Extra tweet.fields are free; expansions are not.
 TWEET_FIELDS = ",".join(
@@ -148,9 +152,9 @@ def _entity_tags(entities: dict[str, Any] | None, key: str, field: str) -> list[
     return [item.get(field, "") for item in entities.get(key, []) if item.get(field)]
 
 
-def _matched_keywords(text: str | None) -> list[str]:
+def _matched_keywords(text: str | None, keywords: list[str]) -> list[str]:
     normalized = (text or "").casefold()
-    return [keyword for keyword in MATCH_KEYWORDS if keyword in normalized]
+    return [keyword for keyword in keywords if keyword.casefold() in normalized]
 
 
 def flatten_post(
@@ -159,6 +163,7 @@ def flatten_post(
     collected_at: str,
     query_used: str,
     is_reply: bool,
+    matched_keywords: list[str],
 ) -> dict[str, Any]:
     metrics = tweet.get("public_metrics") or {}
     entities = tweet.get("entities") or {}
@@ -187,7 +192,7 @@ def flatten_post(
         "repost_count": repost_count,
         "quote_count": quote_count,
         "impression_count": metrics.get("impression_count"),
-        "matched_keywords": _matched_keywords(tweet.get("text")),
+        "matched_keywords": _matched_keywords(tweet.get("text"), matched_keywords),
         "hashtags": _entity_tags(entities, "hashtags", "tag"),
         "mentions": _entity_tags(entities, "mentions", "username"),
         "urls": _entity_tags(entities, "urls", "expanded_url") or _entity_tags(entities, "urls", "url"),
@@ -236,6 +241,7 @@ def search_pages(
     start_time: str | None = None,
     end_time: str | None = None,
     search_url: str = SEARCH_RECENT,
+    matched_keywords: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     posts: list[dict[str, Any]] = []
     users_out: dict[str, dict[str, Any]] = {}
@@ -279,7 +285,7 @@ def search_pages(
         if not page:
             break
         for tweet in page:
-            posts.append(flatten_post(tweet, users_by_id, collected_at, query, is_reply))
+            posts.append(flatten_post(tweet, users_by_id, collected_at, query, is_reply, matched_keywords or []))
             if len(posts) >= max_results_total:
                 break
 
@@ -301,6 +307,7 @@ def collect_replies(
     start_time: str | None = None,
     end_time: str | None = None,
     search_url: str = SEARCH_RECENT,
+    matched_keywords: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     candidates = [p for p in seed_posts if (p.get("reply_count") or 0) > 0 and p.get("conversation_id")]
     candidates.sort(key=lambda p: (p.get("reply_count") or 0, p.get("total_engagement") or 0), reverse=True)
@@ -323,6 +330,7 @@ def collect_replies(
             start_time=start_time,
             end_time=end_time,
             search_url=search_url,
+            matched_keywords=matched_keywords,
         )
         users.update(page_users)
         for reply in page:
@@ -422,6 +430,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-time", help="Inclusive UTC ISO-8601 start time for a bounded archive search.")
     parser.add_argument("--end-time", help="Exclusive UTC ISO-8601 end time for a bounded archive search.")
     parser.add_argument("--archive", action="store_true", help="Use X full-archive search instead of recent search.")
+    parser.add_argument("--topic-month", help="YYYY-MM-01 month in monthly_topic_stats; defaults to latest month.")
     parser.add_argument("--dry-run", action="store_true", help="Print cost estimate only. No API call.")
     return parser.parse_args()
 
@@ -453,6 +462,7 @@ def main() -> None:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     from scripts.supabase.twitter_pipeline import latest_post_id
+    from scripts.supabase.twitter_pipeline import topic_keyword_groups
 
     since_id = None if args.force or args.archive else latest_post_id()
     if since_id:
@@ -462,19 +472,39 @@ def main() -> None:
 
     session = _client()
     collected_at = datetime.now(timezone.utc).isoformat()
-    print(f"Searching (up to {args.max_posts} new posts), single query...")
-    seed_posts, all_users = search_pages(
-        session,
-        KEYWORD_QUERY,
-        args.max_posts,
-        collected_at,
-        False,
-        args.with_users,
-        since_id,
-        args.start_time,
-        args.end_time,
-        SEARCH_ALL if args.archive else SEARCH_RECENT,
+    keyword_groups = topic_keyword_groups(args.topic_month)
+    print(
+        f"Loaded {sum(len(values) for values in keyword_groups.values())} monthly topic keywords "
+        f"across {len(keyword_groups)} countries from Supabase."
     )
+    all_keywords = list(dict.fromkeys(keyword for values in keyword_groups.values() for keyword in values))
+    seed_posts: list[dict[str, Any]] = []
+    all_users: dict[str, dict[str, Any]] = {}
+    remaining_posts = args.max_posts
+    remaining_countries = len(keyword_groups)
+    for country, keywords in keyword_groups.items():
+        if remaining_posts <= 0:
+            break
+        query = build_keyword_query(keywords, country)
+        country_limit = min(remaining_posts, (remaining_posts + remaining_countries - 1) // remaining_countries)
+        print(f"Searching {country} (up to {country_limit} posts)...")
+        country_posts, country_users = search_pages(
+            session,
+            query,
+            country_limit,
+            collected_at,
+            False,
+            args.with_users,
+            since_id,
+            args.start_time,
+            args.end_time,
+            SEARCH_ALL if args.archive else SEARCH_RECENT,
+            all_keywords,
+        )
+        seed_posts.extend(country_posts)
+        all_users.update(country_users)
+        remaining_posts -= len(country_posts)
+        remaining_countries -= 1
     seed_posts = [p for p in dedupe_posts(seed_posts) if not p.get("is_reply")]
     _fetch_missing_impressions(session, seed_posts)
 
@@ -490,6 +520,7 @@ def main() -> None:
             args.start_time,
             args.end_time,
             SEARCH_ALL if args.archive else SEARCH_RECENT,
+            keywords,
         )
         all_users.update(reply_users)
         for reply in replies:

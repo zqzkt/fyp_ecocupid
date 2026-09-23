@@ -3,3 +3,4 @@ lingua-language-detector
 pandas
 python-dotenv
 requests
+emoji>=2.16.0
