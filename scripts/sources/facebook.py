@@ -1514,8 +1514,6 @@ def fetch_facebook_comments(
     limit=COMMENT_LIMIT_PER_POST
 ):
 
-    apify_client = require_apify_client()
-
     post_urls = [
         {"url": post["url"]}
         for post in posts
@@ -1528,6 +1526,8 @@ def fetch_facebook_comments(
             "for comment scraping."
         )
         return []
+
+    apify_client = require_apify_client()
 
     run_input = {
         "startUrls": post_urls,
