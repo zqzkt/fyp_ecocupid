@@ -306,7 +306,7 @@ def sync_x_rows(
 
 
 def run_cleaner() -> None:
-    """Refresh shared clean tables after a successful raw-data upload."""
+    """Refresh the shared clean tables after a successful raw-data upload."""
     cleaner = REPO_ROOT / "scripts" / "cleaning" / "clean_social.py"
     print("Raw data uploaded; cleaning all available platform tables...")
     try:
@@ -314,7 +314,7 @@ def run_cleaner() -> None:
     except subprocess.CalledProcessError as error:
         raise SystemExit(
             f"Cleaning failed with exit code {error.returncode}; "
-            "raw rows remain stored, but clean tables may be incomplete."
+            "raw rows remain stored, but the clean tables may be incomplete."
         ) from error
 
 

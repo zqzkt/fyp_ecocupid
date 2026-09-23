@@ -256,6 +256,7 @@ print(
 # =====================================================
 
 comments_rows = []
+post_country_by_id = dict(zip(posts_df["post_id"], posts_df["country"]))
 
 
 for item in items:
@@ -292,7 +293,7 @@ for item in items:
                 TOPIC,
 
             "country":
-                COUNTRY,
+                post_country_by_id.get(post_id),
 
             "hashtag":
                 HASHTAG,
@@ -356,9 +357,6 @@ if not comments_df.empty:
             )
         )
 
-comments_df = comments_df[
-    comments_df["comment_text"].apply(is_english)
-].copy()
 comments_df = comments_df[
     comments_df["post_id"].isin(valid_post_ids)
 ].copy()

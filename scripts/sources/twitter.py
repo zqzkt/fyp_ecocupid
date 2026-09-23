@@ -523,7 +523,9 @@ def main() -> None:
             keywords,
         )
         all_users.update(reply_users)
+        country_by_post_id = {post.get("post_id"): post.get("inferred_country") for post in seed_posts}
         for reply in replies:
+            source_post_id = reply.get("source_post_id") or reply.get("conversation_id")
             reply_rows.append(
                 {
                     "reply_id": reply["post_id"],
@@ -541,7 +543,7 @@ def main() -> None:
                     "hashtags": reply.get("hashtags"),
                     "mentions": reply.get("mentions"),
                     "urls": reply.get("urls"),
-                    "inferred_country": reply.get("inferred_country"),
+                    "inferred_country": country_by_post_id.get(source_post_id),
                     "collected_at": collected_at,
                 }
             )

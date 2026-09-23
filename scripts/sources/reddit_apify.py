@@ -184,6 +184,16 @@ for item, topic, country in result_items:
 # CREATE DATAFRAMES
 # =====================================================
 
+# Comments use the country assigned to their linked post, even when the
+# scraper returned the comment as a separate top-level item.
+post_country_by_id = {
+    row["post_id"]: row.get("country")
+    for row in posts_data
+    if row.get("post_id")
+}
+for comment in comments_data:
+    comment["country"] = post_country_by_id.get(comment.get("post_id"), comment.get("country"))
+
 posts_df = pd.DataFrame(posts_data)
 comments_df = pd.DataFrame(comments_data)
 
@@ -223,7 +233,6 @@ posts_df["language_text"] = (
 comments_df["language_text"] = comments_df["body"].fillna("")
 
 posts_df = posts_df[posts_df["language_text"].apply(is_english)].copy()
-comments_df = comments_df[comments_df["language_text"].apply(is_english)].copy()
 
 valid_post_ids = set(posts_df["post_id"].dropna())
 comments_df = comments_df[
@@ -254,9 +263,10 @@ def append_unique_rows(new_df, csv_file, duplicate_column):
         else:
             existing_df["language_text"] = existing_df["body"].fillna("")
 
-        existing_df = existing_df[
-            existing_df["language_text"].apply(is_english)
-        ].copy()
+        if duplicate_column == "post_id":
+            existing_df = existing_df[
+                existing_df["language_text"].apply(is_english)
+            ].copy()
         existing_df.drop(columns=["language_text"], inplace=True)
         combined_df = pd.concat([existing_df, new_df], ignore_index=True)
     else:
