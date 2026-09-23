@@ -1,5 +1,0 @@
-apify-client
-lingua-language-detector
-pandas
-python-dotenv
-requests
