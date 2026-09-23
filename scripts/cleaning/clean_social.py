@@ -122,8 +122,8 @@ def normalize_row(row: dict[str, Any], platform: str, source_type: str, source_t
         "lang": first(row, "lang", "language"),
         "inferred_country": first(row, "inferred_country", "country", "subreddit"),
         "author_id": first(row, "author_id", "user_id", "author", "author_fullname", "username"),
-        "conversation_id": first(row, "conversation_id", "video_id", "media_id", "link_id", "post_id"),
-        "parent_source_id": first(row, "parent_tweet_id", "parent_id", "parent_id"),
+        "conversation_id": first(row, "conversation_id", "video_id", "media_id", "link_id", "post_id", "parent_post_id"),
+        "parent_source_id": first(row, "parent_tweet_id", "parent_id", "parent_post_id"),
         "created_at": first(row, "created_at", "created_utc", "timestamp", "published", "published_date"),
         "matched_keywords": first(row, "matched_keywords", "keywords") or [],
         "like_count": likes,
@@ -173,22 +173,41 @@ def upsert(session: requests.Session, base_url: str, key: str, table: str, rows:
 def main() -> None:
     base_url, key = credentials()
     session = requests.Session()
-    sources = (
-        ("x", "post", "x_posts", "clean_posts"),
-        ("reddit", "post", "reddit_posts", "clean_posts"),
-        ("x", "comment", "x_replies", "clean_comments"),
-        ("reddit", "comment", "reddit_comments", "clean_comments"),
-        ("youtube", "post", "youtube_videos", "clean_posts"),
-        ("youtube", "comment", "youtube_comments", "clean_comments"),
-        ("instagram", "post", "instagram_posts", "clean_posts"),
-        ("instagram", "comment", "instagram_comments", "clean_comments"),
+    platform_tables = (
+        ("x", "x_posts", "x_replies"),
+        ("reddit", "reddit_posts", "reddit_comments"),
+        ("youtube", "youtube_videos", "youtube_comments"),
+        ("instagram", "instagram_posts", "instagram_comments"),
+        ("facebook", "facebook_posts", "facebook_comments"),
     )
     counts = {"clean_posts": 0, "clean_comments": 0}
-    for platform, source_type, source_table, target_table in sources:
-        raw_rows = fetch_rows(session, base_url, key, source_table)
-        cleaned = [r for r in (normalize_row(row, platform, source_type, source_table) for row in raw_rows) if r]
-        counts[target_table] += upsert(session, base_url, key, target_table, cleaned)
-        print(f"{source_table} -> {target_table}: {len(cleaned)} rows")
+    for platform, post_table, comment_table in platform_tables:
+        posts = fetch_rows(session, base_url, key, post_table)
+        comments = fetch_rows(session, base_url, key, comment_table)
+        post_countries = {
+            str(first(row, "post_id", "video_id", "media_id", "id", "name")): first(
+                row, "inferred_country", "country"
+            )
+            for row in posts
+            if first(row, "post_id", "video_id", "media_id", "id", "name") is not None
+        }
+        cleaned_posts = [
+            row for row in (normalize_row(item, platform, "post", post_table) for item in posts) if row
+        ]
+        cleaned_comments = []
+        for item in comments:
+            comment = dict(item)
+            parent_id = first(comment, "post_id", "video_id", "media_id", "parent_post_id", "conversation_id")
+            if parent_id is not None and str(parent_id) in post_countries:
+                comment["inferred_country"] = post_countries[str(parent_id)]
+                comment["country"] = post_countries[str(parent_id)]
+            normalized = normalize_row(comment, platform, "comment", comment_table)
+            if normalized:
+                cleaned_comments.append(normalized)
+        counts["clean_posts"] += upsert(session, base_url, key, "clean_posts", cleaned_posts)
+        counts["clean_comments"] += upsert(session, base_url, key, "clean_comments", cleaned_comments)
+        print(f"{post_table} -> clean_posts: {len(cleaned_posts)} rows")
+        print(f"{comment_table} -> clean_comments: {len(cleaned_comments)} rows")
     print(counts)
 
 

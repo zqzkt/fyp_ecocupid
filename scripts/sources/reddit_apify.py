@@ -184,6 +184,16 @@ for item, topic, country in result_items:
 # CREATE DATAFRAMES
 # =====================================================
 
+# Comments use the country assigned to their linked post, even when the
+# scraper returned the comment as a separate top-level item.
+post_country_by_id = {
+    row["post_id"]: row.get("country")
+    for row in posts_data
+    if row.get("post_id")
+}
+for comment in comments_data:
+    comment["country"] = post_country_by_id.get(comment.get("post_id"), comment.get("country"))
+
 posts_df = pd.DataFrame(posts_data)
 comments_df = pd.DataFrame(comments_data)
 

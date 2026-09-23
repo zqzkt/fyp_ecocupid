@@ -263,6 +263,15 @@ def sync_facebook_rows(
         )
         if row
     ]
+    country_by_post_id = {
+        str(post.get("post_id")): post.get("country")
+        for post in projected_posts
+        if post.get("post_id") is not None
+    }
+    for comment in projected_comments:
+        parent_post_id = comment.get("parent_post_id")
+        if parent_post_id is not None and str(parent_post_id) in country_by_post_id:
+            comment["country"] = country_by_post_id[str(parent_post_id)]
 
     counts = {
 
@@ -291,5 +300,9 @@ def sync_facebook_rows(
             indent=2
         )
     )
+
+    from scripts.supabase.twitter_pipeline import run_cleaner
+
+    run_cleaner()
 
     return counts

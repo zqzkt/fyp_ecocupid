@@ -362,6 +362,17 @@ def run_monthly_job(reference: datetime | None = None, *, ignore_day_guard: bool
             "no monthly rows were uploaded by this run."
         ) from error
 
+    sentiment_script = REPO_ROOT / "scripts" / "sentiment" / "sentiment_analysis.py"
+    sentiment_command = [sys.executable, str(sentiment_script), "--month", start_time[:10], "--run-now"]
+    print(f"Running emotion analysis for {start_time[:10]}...")
+    try:
+        subprocess.run(sentiment_command, cwd=REPO_ROOT, check=True)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Monthly emotion analysis failed with exit code {error.returncode}; "
+            "raw and cleaned data remain stored, but environment_sentiment may be incomplete."
+        ) from error
+
 if __name__ == "__main__":
     if "--monthly" in sys.argv[1:]:
         run_monthly_job(ignore_day_guard="--run-now" in sys.argv[1:])
