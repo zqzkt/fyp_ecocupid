@@ -10,7 +10,6 @@ from collections import Counter, defaultdict
 import pandas as pd
 from dotenv import load_dotenv
 from apify_client import ApifyClient
-from lingua import Language, LanguageDetectorBuilder
 
 
 # =========================================================
@@ -88,13 +87,16 @@ COMMENT_RUN_MAX_COST_USD = 1.00
 USE_CACHED_POSTS = True
 USE_CACHED_COMMENTS = True
 
+# Set FACEBOOK_OFFLINE_TEST=1 to run only against existing local caches.
+# This mode refuses fresh Apify requests and skips Supabase uploads.
+OFFLINE_TEST_MODE = os.getenv(
+    "FACEBOOK_OFFLINE_TEST",
+    "0",
+).lower() in {"1", "true", "yes"}
+
 # Supabase already contains the Facebook tables, so keeping
 # this True will upsert the newly classified posts/comments.
 UPLOAD_TO_SUPABASE = True
-
-# Instagram and Reddit currently keep English-language records only.
-# Keep this True to apply the same rule to Facebook.
-ENGLISH_ONLY = True
 
 DATA_DIR = REPO_ROOT / "data" / "raw"
 
@@ -138,6 +140,11 @@ FACEBOOK_SOURCES = [
         "source_name": "NParks",
         "url": "https://www.facebook.com/nparksbuzz",
     },
+    {
+        "country": "Singapore",
+        "source_name": "Eco-Business",
+        "url": "https://www.facebook.com/ecobusinesscom",
+    },
 
     # Malaysia
     {
@@ -149,6 +156,11 @@ FACEBOOK_SOURCES = [
         "country": "Malaysia",
         "source_name": "Friends of the Earth Malaysia",
         "url": "https://www.facebook.com/FriendsoftheEarthMalaysia",
+    },
+    {
+        "country": "Malaysia",
+        "source_name": "Malaysian Nature Society",
+        "url": "https://www.facebook.com/MalaysianNatureSociety.Official",
     },
 
     # Indonesia
@@ -162,6 +174,11 @@ FACEBOOK_SOURCES = [
         "source_name": "WWF Indonesia",
         "url": "https://www.facebook.com/WWFIndonesia",
     },
+    {
+        "country": "Indonesia",
+        "source_name": "Mongabay Indonesia",
+        "url": "https://www.facebook.com/MongabayIndonesia",
+    },
 
     # Philippines
     {
@@ -173,6 +190,11 @@ FACEBOOK_SOURCES = [
         "country": "Philippines",
         "source_name": "Haribon Foundation",
         "url": "https://www.facebook.com/GoHaribon",
+    },
+    {
+        "country": "Philippines",
+        "source_name": "Climate Change Commission",
+        "url": "https://www.facebook.com/CCCPhl",
     },
 
     # Thailand
@@ -186,8 +208,13 @@ FACEBOOK_SOURCES = [
         "source_name": "WWF Thailand",
         "url": "https://www.facebook.com/wwfthailand",
     },
-    
-    #Brunei
+    {
+        "country": "Thailand",
+        "source_name": "EnLAW",
+        "url": "https://www.facebook.com/Enlawthai2001",
+    },
+
+    # Brunei
     {
         "country": "Brunei",
         "source_name": "Brunei Nature Society",
@@ -195,9 +222,14 @@ FACEBOOK_SOURCES = [
     },
     {
         "country": "Brunei",
-        "source_name": "WWF Brunei",
-        "url": "https://www.facebook.com/WWFBrunei",
-    }
+        "source_name": "Green Brunei",
+        "url": "https://www.facebook.com/GreenBrunei",
+    },
+    {
+        "country": "Brunei",
+        "source_name": "Beach Bunch",
+        "url": "https://www.facebook.com/beachbunch",
+    },
 ]
 
 
@@ -821,24 +853,6 @@ def safe_int(value):
         return 0
 
 
-language_detector = (
-    LanguageDetectorBuilder
-    .from_all_languages()
-    .with_minimum_relative_distance(0.25)
-    .build()
-)
-
-
-def is_english(text):
-    """Apply the same English-language rule used by the other collectors."""
-
-    text = str(text or "").strip()
-    if len(text) < 10:
-        return False
-
-    return language_detector.detect_language_of(text) == Language.ENGLISH
-
-
 def is_in_previous_calendar_month(value):
     """Return True when a timestamp falls inside the reporting month."""
 
@@ -1049,6 +1063,7 @@ def fetch_facebook_posts(
         "startUrls": page_urls,
         "resultsLimit": limit,
         "onlyPostsNewerThan": POST_DATE_RANGE,
+        "onlyPostsOlderThan": CURRENT_MONTH_START.date().isoformat(),
         "captionText": False,
     }
 
@@ -1729,12 +1744,25 @@ if __name__ == "__main__":
     print("FACEBOOK ENVIRONMENT PIPELINE")
     print("==============================")
 
+    if OFFLINE_TEST_MODE:
+        print(
+            "Offline test mode enabled: "
+            "using local caches only; "
+            "Apify and Supabase are disabled."
+        )
+
     # =====================================================
     # STEP 1: COLLECT / LOAD POSTS
     # =====================================================
 
+    if OFFLINE_TEST_MODE and not POSTS_CACHE_FILE.exists():
+        raise SystemExit(
+            "Offline test requires the cached posts file: "
+            f"{POSTS_CACHE_FILE}"
+        )
+
     if (
-        USE_CACHED_POSTS
+        (USE_CACHED_POSTS or OFFLINE_TEST_MODE)
         and POSTS_CACHE_FILE.exists()
     ):
         print("\nUsing cached Facebook posts...")
@@ -1781,16 +1809,6 @@ if __name__ == "__main__":
     print_source_coverage(posts)
     print_source_errors(posts)
 
-    if ENGLISH_ONLY:
-        posts_for_classification = [
-            post
-            for post in posts
-            if not post.get("postId")
-            or is_english(build_classification_text(post))
-        ]
-    else:
-        posts_for_classification = posts
-
     # =====================================================
     # STEP 2: CLASSIFY ENVIRONMENTAL POSTS
     # =====================================================
@@ -1798,7 +1816,7 @@ if __name__ == "__main__":
     (
         environmental_posts,
         rejected_posts,
-    ) = split_environmental_posts(posts_for_classification)
+    ) = split_environmental_posts(posts)
 
     print(
         f"\nEnvironmental posts found: "
@@ -1897,8 +1915,14 @@ if __name__ == "__main__":
     # =====================================================
 
     if selected_posts:
+        if OFFLINE_TEST_MODE and not COMMENTS_CACHE_FILE.exists():
+            raise SystemExit(
+                "Offline test requires the cached comments file: "
+                f"{COMMENTS_CACHE_FILE}"
+            )
+
         if (
-            USE_CACHED_COMMENTS
+            (USE_CACHED_COMMENTS or OFFLINE_TEST_MODE)
             and COMMENTS_CACHE_FILE.exists()
         ):
             print(
@@ -1949,9 +1973,6 @@ if __name__ == "__main__":
             continue
         if parent_post_id not in valid_post_ids:
             continue
-        if ENGLISH_ONLY and not is_english(comment.get("text")):
-            continue
-
         if comment_id:
             seen_comment_ids.add(comment_id)
         unique_comments.append(comment)
@@ -2017,7 +2038,7 @@ if __name__ == "__main__":
     # STEP 7: SUPABASE SYNC
     # =====================================================
 
-    if UPLOAD_TO_SUPABASE:
+    if UPLOAD_TO_SUPABASE and not OFFLINE_TEST_MODE:
         print("\n==============================")
         print("SYNCING TO SUPABASE")
         print("==============================")
