@@ -6,6 +6,21 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
 
+# load_dotenv()
+# url = os.environ.get("SUPABASE_URL", "")
+# key = os.environ.get("SUPABASE_KEY", "")
+
+# supabase: Client = create_client(url, key)
+
+def get_monthly_keywords(supabase, country):
+    keywords = []
+    response = supabase.table("monthly_topic_stats").select("monthly_keywords").eq("country", country).lte("topic_rank", 3).execute()
+    list_of_keywords = response.data
+    keywords = [kw.strip()
+        for item in list_of_keywords
+        for kw in item['monthly_keywords'].split(',')]
+    return keywords
+
 def get_previous_month_start():
     now = datetime.now()
     
@@ -158,12 +173,12 @@ def main():
     for country, location_data in all_countries.items():
 
         location = location_data["location"]
+        country_code = location_data["regionCode"]
         location_radius = location_data["locationRadius"]
-        keywords = location_data["keywords"]
-
+        keywords = get_monthly_keywords(supabase, country)
         video_records = fetch_videos(
             youtube,
-            country,
+            country_code,
             keywords,
             location,
             location_radius
@@ -235,6 +250,3 @@ def main():
 if __name__ == "__main__":
     main()
     fetch_comments.main()
-
-
-
