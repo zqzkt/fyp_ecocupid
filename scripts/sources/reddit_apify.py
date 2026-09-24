@@ -6,56 +6,18 @@ import os
 import sys
 from pathlib import Path
 from lingua import Language, LanguageDetectorBuilder
+from dotenv import load_dotenv
 
 # =====================================================
 # CONFIGURATION
 # =====================================================
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(REPO_ROOT / ".env")
 APIFY_TOKEN = "apify_api_BVpQ54MVumBYBbbSW9aoTzhcI9p31L4qi8Kz"
-
-topics = [
-    # "sustainability",
-    # "environment",
-    # "climate change",
-    # "pollution",
-    "haze",
-    # "renewable energy",
-    # "waste management",
-    # "carbon emissions"
-]
-
-countries = [
-    # "Singapore",
-    # "Malaysia",
-    "Indonesia",
-    # "Philippines",
-    # "Brunei",
-    # "Thailand"
-]
 
 MAX_POSTS = 2
 MAX_COMMENTS = 2
-
-# =====================================================
-# GENERATE REDDIT SEARCH URLS
-# =====================================================
-
-start_urls = []
-
-for topic in topics:
-    for country in countries:
-
-        search_query = f"{topic} {country}"
-
-        start_urls.append(
-            {
-                "url": f"https://www.reddit.com/search/?q={quote_plus(search_query)}",
-                "topic": topic,
-                "country": country,
-            }
-        )
-
-print(f"Generated {len(start_urls)} search URLs")
 
 # =====================================================
 # RUN APIFY ACTOR
@@ -71,6 +33,29 @@ posted_after = previous_month_start.isoformat()
 posted_before = previous_month_end.isoformat()
 
 print(f"Collecting posts and comments from {posted_after} through {posted_before}")
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from scripts.supabase.reddit_pipeline import topic_keyword_groups
+
+keyword_groups = topic_keyword_groups(previous_month_start.isoformat())
+start_urls = []
+for country, keywords in keyword_groups.items():
+    for keyword in keywords:
+        search_query = f"{keyword} {country}"
+        start_urls.append(
+            {
+                "url": f"https://www.reddit.com/search/?q={quote_plus(search_query)}",
+                "topic": keyword,
+                "country": country,
+            }
+        )
+
+print(
+    f"Loaded {sum(len(values) for values in keyword_groups.values())} top-three monthly keywords "
+    f"across {len(keyword_groups)} countries"
+)
+print(f"Generated {len(start_urls)} search URLs")
 
 client = ApifyClient(APIFY_TOKEN)
 
