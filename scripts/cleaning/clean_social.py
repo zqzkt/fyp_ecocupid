@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import os
+import time
 from importlib import import_module
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -17,9 +18,12 @@ demojize = import_module("emoji").demojize
 
 BATCH_SIZE = 100
 PAGE_SIZE = 1000
+TRANSLATION_BATCH_SIZE = 50
+TRANSLATION_RETRIES = 3
 MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,50}", re.UNICODE)
 WHITESPACE_RE = re.compile(r"\s+")
 _translator = None
+X_LANGUAGE_CODES_WITHOUT_TRANSLATABLE_SOURCE = {"qam", "qct", "qht", "qme", "qst"}
 VULGARITY_RE = re.compile(
     r"\b(?:motherfuck(?:er|ing|ed)?|fuck(?:er|ing|ed|s)?|shit(?:ty|ting|ted|s)?|"
     r"asshole(?:s)?|bitch(?:es|y)?|bastard(?:s)?|cunt(?:s)?|dick(?:head|s)?|"
@@ -86,18 +90,48 @@ def translate_to_english(
     source_language: str | None = None,
 ) -> tuple[str, str]:
     """Detect the source language and translate comment text with Cloud Translation."""
+    normalized_language = str(source_language or "").strip().lower()
+    if normalized_language == "zxx":
+        # ISO 639-2 uses zxx for text with no linguistic content. Preserve
+        # emoji-only and other non-linguistic comments without calling Translate.
+        return text, "zxx"
     global _translator
     if _translator is None:
         from google.cloud import translate_v2
 
         _translator = translate_v2.Client()
     options: dict[str, str] = {"target_language": "en"}
-    if source_language and source_language.lower() not in {"en", "und"}:
+    if source_language and normalized_language not in {
+        "en",
+        "und",
+        "mul",
+        *X_LANGUAGE_CODES_WITHOUT_TRANSLATABLE_SOURCE,
+    }:
         # X still labels Indonesian as "in"; Cloud Translation expects "id".
-        options["source_language"] = {"in": "id"}.get(
-            source_language.lower(), source_language
-        )
-    result = _translator.translate(text, **options)
+        options["source_language"] = {"in": "id"}.get(normalized_language, source_language)
+    from google.api_core.exceptions import BadRequest
+
+    try:
+        result = _translator.translate(text, **options)
+    except BadRequest:
+        # X-specific codes such as qme are not Google language codes. Retry
+        # with source-language detection if an explicit code was rejected.
+        if "source_language" in options:
+            options.pop("source_language")
+            try:
+                result = _translator.translate(text, **options)
+            except BadRequest:
+                print(
+                    f"Skipping translation for unsupported language code "
+                    f"{source_language!r}; preserving the original comment."
+                )
+                return text, str(source_language or "und")
+        else:
+            print(
+                f"Skipping translation for unsupported language code "
+                f"{source_language!r}; preserving the original comment."
+            )
+            return text, str(source_language or "und")
     detected_language = (
         result.get("detectedSourceLanguage")
         or source_language
@@ -106,10 +140,101 @@ def translate_to_english(
     return str(result.get("translatedText") or text), str(detected_language)
 
 
+def translate_comments_batch(comments: list[dict[str, Any]]) -> list[tuple[str, str] | None]:
+    """Translate eligible comments in batches, retaining originals on API failure."""
+    results: list[tuple[str, str] | None] = [None] * len(comments)
+    eligible: list[tuple[int, str, str | None]] = []
+    for index, row in enumerate(comments):
+        text = first(row, "text", "body", "selftext", "comment", "comment_text", "caption", "title")
+        if text is None:
+            continue
+        language = str(first(row, "lang", "language") or "").strip().lower()
+        if language in {"en", "zxx"}:
+            continue
+        eligible.append((index, str(text), language or None))
+
+    if not eligible:
+        return results
+
+    global _translator
+    if _translator is None:
+        from google.cloud import translate_v2
+
+        _translator = translate_v2.Client()
+
+    for start in range(0, len(eligible), TRANSLATION_BATCH_SIZE):
+        batch = eligible[start : start + TRANSLATION_BATCH_SIZE]
+        texts = [text for _, text, _ in batch]
+        for attempt in range(TRANSLATION_RETRIES):
+            try:
+                translated = _translator.translate(texts, target_language="en")
+                if isinstance(translated, dict):
+                    translated = [translated]
+                for (row_index, original, source_language), item in zip(batch, translated):
+                    results[row_index] = (
+                        str(item.get("translatedText") or original),
+                        str(item.get("detectedSourceLanguage") or source_language or "und"),
+                    )
+                break
+            except Exception as exc:
+                if attempt + 1 < TRANSLATION_RETRIES:
+                    delay = 2 ** attempt
+                    print(
+                        f"Translation batch failed ({exc}); retrying in {delay}s "
+                        f"({attempt + 1}/{TRANSLATION_RETRIES - 1})",
+                        flush=True,
+                    )
+                    time.sleep(delay)
+                else:
+                    print(
+                        f"Translation batch failed after {TRANSLATION_RETRIES} attempts "
+                        f"({exc}); preserving originals for {len(batch)} comments.",
+                        flush=True,
+                    )
+                    for row_index, original, language in batch:
+                        results[row_index] = (original, language or "und")
+        # Keep well below Google's documented per-second request quota.
+        if start + TRANSLATION_BATCH_SIZE < len(eligible):
+            time.sleep(0.25)
+    return results
+
+
 def first(row: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         if row.get(key) is not None:
             return row[key]
+    return None
+
+
+def matched_topics(row: dict[str, Any]) -> list[str]:
+    """Read topic metadata across platform-specific source column names."""
+    for key in ("matched_keywords", "keywords", "topic"):
+        value = row.get(key)
+        if isinstance(value, (list, tuple, set)):
+            topics = [str(item).strip() for item in value if str(item).strip()]
+        elif value is None:
+            continue
+        else:
+            topic = str(value).strip()
+            topics = [topic] if topic else []
+        if topics:
+            return list(dict.fromkeys(topics))
+    return []
+
+
+def inferred_country(row: dict[str, Any]) -> Any:
+    """Return the first usable inferred country or country field."""
+    for key in ("inferred_country", "country"):
+        value = row.get(key)
+        if str(value or "").strip().casefold() not in {
+            "",
+            "none",
+            "null",
+            "unknown",
+            "unspecified",
+            "n/a",
+        }:
+            return value
     return None
 
 
@@ -130,6 +255,7 @@ def normalize_row(
     source_table: str,
     *,
     translate_comment: bool = False,
+    translated_comment: tuple[str, str] | None = None,
 ) -> dict[str, Any] | None:
     identifier = source_id(row, platform, source_type)
     original_text = first(row, "text", "body", "selftext", "comment", "comment_text", "caption", "title")
@@ -141,13 +267,20 @@ def normalize_row(
         return None
     original_text = str(original_text)
     lang = first(row, "lang", "language")
-    if translate_comment:
-        if not lang or str(lang).lower() == "und":
+    if translated_comment is not None:
+        original_text, lang = translated_comment
+    elif translate_comment:
+        normalized_language = str(lang or "").strip().lower()
+        if normalized_language == "zxx":
+            # The text has no natural language to translate; keep it for emoji
+            # and other non-linguistic sentiment cues.
+            lang = "zxx"
+        elif not normalized_language or normalized_language == "und":
             translated_text, detected_language = translate_to_english(original_text)
             lang = detected_language
             if str(lang).lower() != "en":
                 original_text = translated_text
-        elif str(lang).lower() != "en":
+        elif normalized_language != "en":
             original_text, lang = translate_to_english(original_text, str(lang))
     likes = int(first(row, "like_count", "likeCount", "score", "ups") or 0)
     replies = int(first(row, "reply_count", "comments_count", "total_reply_count", "num_comments") or 0)
@@ -163,7 +296,7 @@ def normalize_row(
         "original_text": str(first(row, "text", "body", "selftext", "comment", "comment_text", "caption", "title")),
         "cleaned_text": clean_text(original_text),
         "lang": lang,
-        "inferred_country": first(row, "inferred_country", "country", "subreddit"),
+        "inferred_country": inferred_country(row),
         "author_id": first(row, "author_id", "user_id", "author", "author_fullname", "username"),
         "conversation_id": first(row, "conversation_id", "video_id", "media_id", "link_id", "post_id", "parent_post_id"),
         "parent_source_id": first(row, "parent_tweet_id", "parent_id", "parent_post_id"),
@@ -178,7 +311,7 @@ def normalize_row(
             "comment_created_at",
             "published_at",
         ),
-        "matched_keywords": first(row, "matched_keywords", "keywords") or [],
+        "matched_keywords": matched_topics(row),
         "like_count": likes,
         "reply_count": replies,
         "repost_count": reposts,
@@ -223,6 +356,27 @@ def upsert(session: requests.Session, base_url: str, key: str, table: str, rows:
     return len(rows)
 
 
+def delete_source_ids(
+    session: requests.Session,
+    base_url: str,
+    key: str,
+    table: str,
+    source_ids: list[str],
+) -> int:
+    """Remove previously-cleaned rows that no longer meet metadata rules."""
+    unique_ids = list(dict.fromkeys(source_ids))
+    for start in range(0, len(unique_ids), BATCH_SIZE):
+        chunk = unique_ids[start : start + BATCH_SIZE]
+        response = session.delete(
+            f"{base_url}/rest/v1/{table}",
+            params={"source_id": f"in.({','.join(chunk)})"},
+            headers=headers(key, write=True),
+            timeout=60,
+        )
+        response.raise_for_status()
+    return len(unique_ids)
+
+
 def main() -> None:
     base_url, key = credentials()
     session = requests.Session()
@@ -235,34 +389,86 @@ def main() -> None:
     )
     counts = {"clean_posts": 0, "clean_comments": 0}
     for platform, post_table, comment_table in platform_tables:
+        print(
+            f"Processing {platform}: reading {post_table} and {comment_table}...",
+            flush=True,
+        )
         posts = fetch_rows(session, base_url, key, post_table)
         comments = fetch_rows(session, base_url, key, comment_table)
+        print(
+            f"{platform}: fetched {len(posts)} posts and {len(comments)} comments",
+            flush=True,
+        )
         post_countries = {
-            str(first(row, "post_id", "video_id", "media_id", "id", "name")): first(
-                row, "inferred_country", "country"
-            )
+            str(first(row, "post_id", "video_id", "media_id", "id", "name")): inferred_country(row)
             for row in posts
             if first(row, "post_id", "video_id", "media_id", "id", "name") is not None
         }
-        cleaned_posts = [
-            row for row in (normalize_row(item, platform, "post", post_table) for item in posts) if row
-        ]
+        post_topics = {
+            str(first(row, "post_id", "video_id", "media_id", "id", "name")): matched_topics(row)
+            for row in posts
+            if first(row, "post_id", "video_id", "media_id", "id", "name") is not None
+        }
+        cleaned_posts = []
+        excluded_posts = []
+        for item in posts:
+            if inferred_country(item) is None:
+                identifier = source_id(item, platform, "post")
+                if identifier:
+                    excluded_posts.append(identifier)
+                continue
+            normalized = normalize_row(item, platform, "post", post_table)
+            if normalized:
+                cleaned_posts.append(normalized)
         cleaned_comments = []
+        excluded_comments = []
+        eligible_comments = []
         for item in comments:
             comment = dict(item)
             parent_id = first(comment, "post_id", "video_id", "media_id", "parent_post_id", "conversation_id")
             if parent_id is not None and str(parent_id) in post_countries:
-                comment["inferred_country"] = post_countries[str(parent_id)]
-                comment["country"] = post_countries[str(parent_id)]
+                parent_country = post_countries[str(parent_id)]
+                if parent_country:
+                    comment["inferred_country"] = parent_country
+                    comment["country"] = parent_country
+            if not matched_topics(comment) and parent_id is not None:
+                inherited_topics = post_topics.get(str(parent_id), [])
+                if inherited_topics:
+                    comment["matched_keywords"] = inherited_topics
+            if not matched_topics(comment):
+                identifier = source_id(comment, platform, "comment")
+                if identifier:
+                    excluded_comments.append(identifier)
+                continue
+            eligible_comments.append(comment)
+
+        translations = translate_comments_batch(eligible_comments)
+        for comment, translation in zip(eligible_comments, translations):
             normalized = normalize_row(
-                comment, platform, "comment", comment_table, translate_comment=True
+                comment,
+                platform,
+                "comment",
+                comment_table,
+                translate_comment=translation is None,
+                translated_comment=translation,
             )
             if normalized:
                 cleaned_comments.append(normalized)
         counts["clean_posts"] += upsert(session, base_url, key, "clean_posts", cleaned_posts)
         counts["clean_comments"] += upsert(session, base_url, key, "clean_comments", cleaned_comments)
-        print(f"{post_table} -> clean_posts: {len(cleaned_posts)} rows")
-        print(f"{comment_table} -> clean_comments: {len(cleaned_comments)} rows")
+        deleted_posts = delete_source_ids(
+            session, base_url, key, "clean_posts", excluded_posts
+        )
+        deleted_comments = delete_source_ids(
+            session, base_url, key, "clean_comments", excluded_comments
+        )
+        print(f"{post_table} -> clean_posts: {len(cleaned_posts)} rows", flush=True)
+        print(f"{comment_table} -> clean_comments: {len(cleaned_comments)} rows", flush=True)
+        print(
+            f"{platform}: excluded {deleted_posts} posts without inferred country and "
+            f"{deleted_comments} replies without topic metadata",
+            flush=True,
+        )
     print(counts)
 
 
