@@ -250,7 +250,16 @@ def sync_x_jsonl(out_dir: Path | None = None) -> dict[str, int]:
     session = requests.Session()
 
     posts = [r for r in (project(row, POST_COLUMNS, "post_id") for row in read_jsonl(out_dir / "x_posts.jsonl")) if r]
-    replies = [r for r in (project(row, REPLY_COLUMNS, "reply_id") for row in read_jsonl(out_dir / "x_replies.jsonl")) if r]
+    comment_path = out_dir / "x_replies.jsonl"
+    if not comment_path.exists():
+        comment_path = out_dir / "x_comments.jsonl"  # Legacy local export name.
+    replies = []
+    for row in read_jsonl(comment_path):
+        if not row.get("reply_id"):
+            row["reply_id"] = row.get("comment_id")
+        projected = project(row, REPLY_COLUMNS, "reply_id")
+        if projected:
+            replies.append(projected)
 
     counts = {
         "x_users": 0,
@@ -259,6 +268,7 @@ def sync_x_jsonl(out_dir: Path | None = None) -> dict[str, int]:
     }
     print(json.dumps(counts, indent=2))
     run_cleaner()
+    run_sentiment()
     return counts
 
 
@@ -289,19 +299,27 @@ def sync_x_rows(
     users: list[dict[str, Any]],
     posts: list[dict[str, Any]],
     replies: list[dict[str, Any]],
+    *,
+    sentiment_platform: str | None = None,
+    sentiment_dry_run: bool = False,
 ) -> dict[str, int]:
     """Project and upsert freshly collected X rows without local staging files."""
     base_url, key = _credentials()
     session = requests.Session()
     projected_posts = [r for r in (project(row, POST_COLUMNS, "post_id") for row in posts) if r]
-    projected_replies = [r for r in (project(row, REPLY_COLUMNS, "reply_id") for row in replies) if r]
+    projected_replies = [
+        r for r in (project(row, REPLY_COLUMNS, "reply_id") for row in replies) if r
+    ]
     counts = {
         "x_users": 0,
         "x_posts": upsert_batches(session, base_url, key, "x_posts", projected_posts, "post_id"),
-        "x_replies": upsert_batches(session, base_url, key, "x_replies", projected_replies, "reply_id"),
+        "x_replies": upsert_batches(
+            session, base_url, key, "x_replies", projected_replies, "reply_id"
+        ),
     }
     print(json.dumps(counts, indent=2))
     run_cleaner()
+    run_sentiment(platform=sentiment_platform, dry_run=sentiment_dry_run)
     return counts
 
 
@@ -315,6 +333,24 @@ def run_cleaner() -> None:
         raise SystemExit(
             f"Cleaning failed with exit code {error.returncode}; "
             "raw rows remain stored, but the clean tables may be incomplete."
+        ) from error
+
+
+def run_sentiment(*, platform: str | None = None, dry_run: bool = False) -> None:
+    """Rebuild environment sentiment after raw X data has been cleaned."""
+    scorer = REPO_ROOT / "scripts" / "sentiment" / "sentiment_analysis.py"
+    print("Clean tables refreshed; deriving environment sentiment...")
+    command = [sys.executable, str(scorer), "--all"]
+    if platform:
+        command.extend(("--platform", platform))
+    if dry_run:
+        command.append("--dry-run")
+    try:
+        subprocess.run(command, cwd=REPO_ROOT, check=True)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Sentiment derivation failed with exit code {error.returncode}; "
+            "raw and clean rows remain stored, but environment_sentiment may be stale."
         ) from error
 
 
@@ -362,9 +398,24 @@ def run_monthly_job(reference: datetime | None = None, *, ignore_day_guard: bool
             "no monthly rows were uploaded by this run."
         ) from error
 
+
+def run_x_collection(*, force: bool = True) -> None:
+    """Call the X endpoint, then let the collector run storage and analysis."""
+    collector = REPO_ROOT / "scripts" / "sources" / "twitter.py"
+    command = [sys.executable, str(collector)]
+    if force:
+        command.append("--force")
+    print("Calling the X endpoint before cleaning and sentiment derivation...")
+    try:
+        subprocess.run(command, cwd=REPO_ROOT, check=True)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(f"X collection failed with exit code {error.returncode}.") from error
+
 if __name__ == "__main__":
     if "--monthly" in sys.argv[1:]:
         run_monthly_job(ignore_day_guard="--run-now" in sys.argv[1:])
+    elif len(sys.argv) == 1 or sys.argv[1] == "--force":
+        run_x_collection(force=True)
     else:
-        target = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_X_DIR
+        target = Path(sys.argv[1])
         sync_x_jsonl(target)
