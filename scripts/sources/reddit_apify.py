@@ -196,7 +196,7 @@ comments_df.drop_duplicates(
 )
 
 # =====================================================
-# KEEP ENGLISH CONTENT
+# KEEP ENGLISH POSTS (AND THEIR COMMENTS)
 # =====================================================
 
 language_detector = (
@@ -212,20 +212,18 @@ def is_english(text):
         return False
     return language_detector.detect_language_of(text) == Language.ENGLISH
 
-posts_df["language_text"] = (
-    posts_df["title"].fillna("") + " " + posts_df["body"].fillna("")
-)
-comments_df["language_text"] = comments_df["body"].fillna("")
+def english_posts_only(df):
+    """Keep only posts whose title + body is detected as English."""
+    language_text = df["title"].fillna("") + " " + df["body"].fillna("")
+    return df[language_text.apply(is_english)].copy()
 
-posts_df = posts_df[posts_df["language_text"].apply(is_english)].copy()
+# Filter posts by language only.
+posts_df = english_posts_only(posts_df)
 
+# Keep every comment (any language) whose post survived the filter.
+# Comments under non-English posts are dropped.
 valid_post_ids = set(posts_df["post_id"].dropna())
-comments_df = comments_df[
-    comments_df["post_id"].isin(valid_post_ids)
-].copy()
-
-posts_df.drop(columns=["language_text"], inplace=True)
-comments_df.drop(columns=["language_text"], inplace=True)
+comments_df = comments_df[comments_df["post_id"].isin(valid_post_ids)].copy()
 
 # =====================================================
 # SAVE CSV FILES
@@ -239,20 +237,10 @@ def append_unique_rows(new_df, csv_file, duplicate_column):
     if os.path.exists(csv_file):
         existing_df = pd.read_csv(csv_file)
 
+        # Only posts are language-filtered; comments are kept as-is.
         if duplicate_column == "post_id":
-            existing_df["language_text"] = (
-                existing_df["title"].fillna("")
-                + " "
-                + existing_df["body"].fillna("")
-            )
-        else:
-            existing_df["language_text"] = existing_df["body"].fillna("")
+            existing_df = english_posts_only(existing_df)
 
-        if duplicate_column == "post_id":
-            existing_df = existing_df[
-                existing_df["language_text"].apply(is_english)
-            ].copy()
-        existing_df.drop(columns=["language_text"], inplace=True)
         combined_df = pd.concat([existing_df, new_df], ignore_index=True)
     else:
         combined_df = new_df
@@ -262,11 +250,7 @@ def append_unique_rows(new_df, csv_file, duplicate_column):
         keep="last",
         inplace=True
     )
-    combined_df.to_csv(
-        csv_file,
-        index=False,
-        encoding="utf-8-sig"
-    )
+    combined_df.to_csv(csv_file, index=False, encoding="utf-8-sig")
     return combined_df
 
 posts_df = append_unique_rows(posts_df, posts_file, "post_id")

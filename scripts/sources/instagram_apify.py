@@ -218,6 +218,14 @@ def is_english(text):
         return False
     return language_detector.detect_language_of(text) == Language.ENGLISH
 
+def append_unique_rows(new_df, csv_file, duplicate_column):
+    if os.path.exists(csv_file):
+        existing_df = pd.read_csv(csv_file)
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        combined_df = new_df
+
+    return combined_df.drop_duplicates(subset=[duplicate_column], keep="last")
 
 posts_df = posts_df[
     posts_df["caption"].apply(is_english)
@@ -354,25 +362,17 @@ comments_df = comments_df[
     comments_df["post_id"].isin(valid_post_ids)
 ].copy()
 
-if not comments_df.empty:
+posts_df = append_unique_rows(posts_df, POSTS_CSV, "post_id")
+comments_df = append_unique_rows(comments_df, COMMENTS_CSV, "comment_id")
 
-    comments_df.to_csv(
-        COMMENTS_CSV,
-        index=False,
-        encoding="utf-8-sig"
-    )
+# Keep comments consistent with the merged posts
+comments_df = comments_df[comments_df["post_id"].isin(set(posts_df["post_id"].dropna()))].copy()
 
-    print(
-        f"Saved {len(comments_df)} comments "
-        f"to {COMMENTS_CSV}"
-    )
+posts_df.to_csv(POSTS_CSV, index=False, encoding="utf-8-sig")
+comments_df.to_csv(COMMENTS_CSV, index=False, encoding="utf-8-sig")
 
-else:
-
-    print(
-        "\nNo sampled comments "
-        "were returned by the Actor."
-    )
+if comments_df.empty:
+    print("\nNo sampled comments were returned by the Actor.")
 
 # =====================================================
 # SUMMARY
