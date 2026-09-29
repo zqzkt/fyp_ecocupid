@@ -47,6 +47,74 @@ COMMENT_COLUMNS = (
 )
 
 
+def monthly_keyword_specs(month: str | None = None) -> list[dict[str, str]]:
+    """Read top-three monthly keywords with their topic and country."""
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+    load_dotenv(os.path.join(repo_root, ".env"))
+
+    base_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    if base_url.endswith("/rest/v1"):
+        base_url = base_url[: -len("/rest/v1")].rstrip("/")
+    key = (
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or ""
+    ).strip()
+    if not base_url or not key:
+        raise SystemExit("SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SECRET_KEY) are required in .env")
+
+    params: dict[str, str | int] = {
+        "select": "country,topic_name,topic_rank,monthly_keywords,month",
+        "topic_rank": "lte.3",
+        "order": "month.desc,topic_rank.asc",
+        "limit": "1000",
+    }
+    if month:
+        params["month"] = f"eq.{month}"
+
+    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+    response = requests.get(
+        f"{base_url}/rest/v1/monthly_topic_stats",
+        params=params,
+        headers=headers,
+        timeout=60,
+    )
+    if response.status_code in {401, 403} and "jwt" in response.text.lower():
+        response = requests.get(
+            f"{base_url}/rest/v1/monthly_topic_stats",
+            params=params,
+            headers={"apikey": key},
+            timeout=60,
+        )
+    if not response.ok:
+        raise SystemExit(f"monthly_topic_stats lookup failed ({response.status_code}): {response.text[:1200]}")
+
+    rows = response.json()
+    if not month and rows:
+        newest_month = max(row.get("month", "") for row in rows)
+        rows = [row for row in rows if row.get("month") == newest_month]
+
+    specs: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in rows:
+        country = str(row.get("country") or "").strip()
+        topic = str(row.get("topic_name") or "").strip()
+        raw_keywords = row.get("monthly_keywords") or ""
+        keywords = raw_keywords if isinstance(raw_keywords, list) else str(raw_keywords).split(",")
+        for raw_keyword in keywords:
+            keyword = str(raw_keyword).strip()
+            identity = (country.casefold(), topic.casefold(), keyword.casefold())
+            if not country or not topic or not keyword or identity in seen:
+                continue
+            seen.add(identity)
+            specs.append({"country": country, "topic": topic, "keyword": keyword})
+
+    if not specs:
+        raise SystemExit("monthly_topic_stats returned no keywords for the requested month.")
+    return specs
+
+
 def _project(row: dict[str, Any], columns: tuple[str, ...], required_id: str) -> dict[str, Any] | None:
     if not row.get(required_id):
         return None

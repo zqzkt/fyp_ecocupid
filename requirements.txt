@@ -8,3 +8,5 @@ langdetect
 transformers<5
 sentencepiece
 torch
+scikit-learn
+joblib

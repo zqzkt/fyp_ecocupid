@@ -319,7 +319,9 @@ def collect_replies(
 
     for post in selected:
         cid = post["conversation_id"]
-        query = f"conversation_id:{cid} is:reply lang:en"
+        # Keep all reply languages; clean_social translates non-English
+        # comments before they enter clean_comments.
+        query = f"conversation_id:{cid} is:reply"
         page, page_users = search_pages(
             session,
             query,
@@ -385,20 +387,29 @@ def _sync_supabase(
     users: list[dict[str, Any]],
     posts: list[dict[str, Any]],
     replies: list[dict[str, Any]],
+    *,
+    sentiment_platform: str | None = None,
+    sentiment_dry_run: bool = False,
 ) -> None:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     from scripts.supabase.twitter_pipeline import sync_x_rows
 
     print("Upserting fresh rows into Supabase...")
-    sync_x_rows(users, posts, replies)
+    sync_x_rows(
+        users,
+        posts,
+        replies,
+        sentiment_platform=sentiment_platform,
+        sentiment_dry_run=sentiment_dry_run,
+    )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Collect EcoInsights X data and upsert it directly into Supabase."
     )
-    parser.add_argument("--max-posts", type=int, default=40, help="New posts to fetch. Min billed page is 10.")
+    parser.add_argument("--max-posts", type=int, default=150, help="New posts to fetch. Min billed page is 10.")
     parser.add_argument("--max-spend", type=float, default=DEFAULT_MAX_SPEND_USD, help="Abort if estimate exceeds this USD.")
     parser.add_argument(
         "--with-replies",
@@ -417,13 +428,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-reply-conversations",
         type=int,
-        default=5,
+        default=15,
         help="Conversations to sample for replies; highest reply counts are selected.",
     )
     parser.add_argument(
         "--max-replies-per-post",
         type=int,
-        default=10,
+        default=20,
         help="Maximum replies to fetch per selected conversation.",
     )
     parser.add_argument("--force", action="store_true", help="Ignore the Supabase checkpoint and search recent posts again.")
@@ -432,6 +443,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--archive", action="store_true", help="Use X full-archive search instead of recent search.")
     parser.add_argument("--topic-month", help="YYYY-MM-01 month in monthly_topic_stats; defaults to latest month.")
     parser.add_argument("--dry-run", action="store_true", help="Print cost estimate only. No API call.")
+    parser.add_argument(
+        "--sentiment-platform",
+        choices=("x", "reddit", "youtube", "instagram", "facebook"),
+        help="Limit the post-collection sentiment step to one platform.",
+    )
+    parser.add_argument(
+        "--sentiment-dry-run",
+        action="store_true",
+        help="Classify sentiment without changing environment_sentiment.",
+    )
     return parser.parse_args()
 
 
@@ -553,7 +574,13 @@ def main() -> None:
     billed_posts = len(seed_posts) + len(reply_rows)
     stats["approx_billed_usd"] = round(billed_posts * POST_READ_USD + len(users) * USER_READ_USD, 4)
     print(json.dumps(stats, indent=2))
-    _sync_supabase(users, seed_posts, reply_rows)
+    _sync_supabase(
+        users,
+        seed_posts,
+        reply_rows,
+        sentiment_platform=args.sentiment_platform,
+        sentiment_dry_run=args.sentiment_dry_run,
+    )
 
 
 if __name__ == "__main__":
