@@ -1,3 +1,4 @@
+
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -27,10 +28,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
         "Check your .env file."
     )
 
-supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY,
-)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 RAW_TABLE = "news_raw"
 SOURCE_COUNTRY = "Philippines"
@@ -64,18 +62,20 @@ END_DATE = datetime.strptime(
 # PAGINATION SETTINGS
 # ============================================================
 
-# Safety limit. Pagination normally stops earlier once
-# articles older than START_DATE are reached.
-MAX_PAGES = 50
+MAX_PAGES = 100
+
+# Stop only after this many consecutive archive pages
+# contain exclusively articles from before START_DATE month.
+CONSECUTIVE_OLD_PAGES_TO_STOP = 3
 
 
 # ============================================================
 # ENVIRONMENT KEYWORDS
 # ============================================================
 #
-# These are metadata only.
-# Mongabay is already an environmental publication, so an
-# article is NOT required to contain one of these keywords.
+# Metadata only. Mongabay is already an environmental
+# publication, so articles are not required to contain
+# these keywords.
 # ============================================================
 
 ENVIRONMENT_KEYWORDS = [
@@ -229,11 +229,7 @@ def find_environment_keywords(text):
     matches = []
 
     for keyword in ENVIRONMENT_KEYWORDS:
-        pattern = (
-            r"(?<!\w)"
-            + re.escape(keyword.lower())
-            + r"(?!\w)"
-        )
+        pattern = r"(?<!\w)" + re.escape(keyword.lower()) + r"(?!\w)"
 
         if re.search(pattern, text):
             matches.append(keyword)
@@ -254,11 +250,7 @@ def find_countries(text):
 
     for country, keywords in COUNTRY_KEYWORDS.items():
         for keyword in keywords:
-            pattern = (
-                r"(?<!\w)"
-                + re.escape(keyword.lower())
-                + r"(?!\w)"
-            )
+            pattern = r"(?<!\w)" + re.escape(keyword.lower()) + r"(?!\w)"
 
             if re.search(pattern, text):
                 countries_found.append(country)
@@ -287,14 +279,8 @@ def get_existing_urls():
                 supabase
                 .table(RAW_TABLE)
                 .select("url")
-                .eq(
-                    "source_country",
-                    SOURCE_COUNTRY,
-                )
-                .range(
-                    start,
-                    start + batch_size - 1,
-                )
+                .eq("source_country", SOURCE_COUNTRY)
+                .range(start, start + batch_size - 1)
                 .execute()
             )
 
@@ -304,27 +290,18 @@ def get_existing_urls():
                 url = row.get("url")
 
                 if url:
-                    existing_urls.add(
-                        clean_url(url)
-                    )
+                    existing_urls.add(clean_url(url))
 
             if len(rows) < batch_size:
                 break
 
             start += batch_size
 
-        print(
-            f"{len(existing_urls)} existing "
-            "Philippines URLs found."
-        )
-
+        print(f"{len(existing_urls)} existing Philippines URLs found.")
         return existing_urls
 
     except Exception as e:
-        print(
-            "Error reading existing URLs "
-            "from Supabase:"
-        )
+        print("Error reading existing URLs from Supabase:")
         print(e)
         raise
 
@@ -337,10 +314,7 @@ def build_archive_url(page_number):
     if page_number == 1:
         return PHILIPPINES_ARCHIVE_URL
 
-    return (
-        PHILIPPINES_ARCHIVE_URL
-        + f"page/{page_number}/"
-    )
+    return PHILIPPINES_ARCHIVE_URL + f"page/{page_number}/"
 
 
 # ============================================================
@@ -353,21 +327,13 @@ def is_article_url(url):
 
     url = clean_url(url)
     parsed = urlparse(url)
-
-    domain = (
-        parsed.netloc
-        .lower()
-        .replace("www.", "")
-    )
+    domain = parsed.netloc.lower().replace("www.", "")
 
     if domain != "news.mongabay.com":
         return False
 
     # Mongabay article URLs use /YYYY/MM/...
-    if not re.search(
-        r"/20\d{2}/\d{2}/",
-        parsed.path,
-    ):
+    if not re.search(r"/20\d{2}/\d{2}/", parsed.path):
         return False
 
     return True
@@ -378,16 +344,12 @@ def is_article_url(url):
 # ============================================================
 
 def extract_archive_articles(html):
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
+    soup = BeautifulSoup(html, "html.parser")
 
     articles = []
     seen_urls = set()
 
-    # Do not rely on <article> tags. Instead, retain links
-    # matching Mongabay's /YYYY/MM/... article URL structure.
+    # Retain links matching Mongabay's /YYYY/MM/ article URL.
     for link in soup.find_all("a", href=True):
         href = link.get("href")
         url = clean_url(href)
@@ -399,11 +361,7 @@ def extract_archive_articles(html):
             continue
 
         seen_urls.add(url)
-
-        link_text = link.get_text(
-            " ",
-            strip=True,
-        )
+        link_text = link.get_text(" ", strip=True)
 
         articles.append({
             "url": url,
@@ -424,50 +382,27 @@ def fetch_archive_page(page_number):
     print("Archive URL:", url)
 
     try:
-        response = SESSION.get(
-            url,
-            timeout=30,
-        )
+        response = SESSION.get(url, timeout=30)
 
-        print(
-            "Archive status:",
-            response.status_code,
-        )
-        print(
-            "Archive HTML length:",
-            len(response.text),
-        )
+        print("Archive status:", response.status_code)
+        print("Archive HTML length:", len(response.text))
 
         if response.status_code != 200:
             print(response.text[:500])
             return []
 
-        articles = extract_archive_articles(
-            response.text
-        )
+        articles = extract_archive_articles(response.text)
 
-        print(
-            "Article URLs found:",
-            len(articles),
-        )
+        print("Article URLs found:", len(articles))
 
         if articles:
-            print(
-                "First article URL:",
-                articles[0]["url"],
-            )
-            print(
-                "Last article URL:",
-                articles[-1]["url"],
-            )
+            print("First article URL:", articles[0]["url"])
+            print("Last article URL:", articles[-1]["url"])
 
         return articles
 
     except Exception as e:
-        print(
-            "Archive request error:",
-            e,
-        )
+        print("Archive request error:", e)
         return []
 
 
@@ -479,10 +414,7 @@ def parse_date_from_url(url):
     if not url:
         return None
 
-    match = re.search(
-        r"/(20\d{2})/(\d{2})/",
-        url,
-    )
+    match = re.search(r"/(20\d{2})/(\d{2})/", url)
 
     if not match:
         return None
@@ -491,8 +423,8 @@ def parse_date_from_url(url):
         year = int(match.group(1))
         month = int(match.group(2))
 
-        # URL gives only year/month, so this is used only
-        # for early month-level filtering.
+        # URL gives only year/month.
+        # Used for early month-level filtering and pagination.
         return year, month
 
     except Exception:
@@ -516,13 +448,7 @@ def parse_article_date(soup, url):
     if meta and meta.get("content"):
         try:
             dt = pd.to_datetime(meta["content"])
-
-            return (
-                dt
-                .to_pydatetime()
-                .replace(tzinfo=None)
-            )
-
+            return dt.to_pydatetime().replace(tzinfo=None)
         except Exception:
             pass
 
@@ -538,13 +464,7 @@ def parse_article_date(soup, url):
     if meta and meta.get("content"):
         try:
             dt = pd.to_datetime(meta["content"])
-
-            return (
-                dt
-                .to_pydatetime()
-                .replace(tzinfo=None)
-            )
-
+            return dt.to_pydatetime().replace(tzinfo=None)
         except Exception:
             pass
 
@@ -558,11 +478,7 @@ def parse_article_date(soup, url):
     )
 
     for script in scripts:
-        text = (
-            script.string
-            or script.get_text()
-            or ""
-        )
+        text = script.string or script.get_text() or ""
 
         match = re.search(
             r'"datePublished"\s*:\s*"([^"]+)"',
@@ -571,16 +487,8 @@ def parse_article_date(soup, url):
 
         if match:
             try:
-                dt = pd.to_datetime(
-                    match.group(1)
-                )
-
-                return (
-                    dt
-                    .to_pydatetime()
-                    .replace(tzinfo=None)
-                )
-
+                dt = pd.to_datetime(match.group(1))
+                return dt.to_pydatetime().replace(tzinfo=None)
             except Exception:
                 pass
 
@@ -589,32 +497,18 @@ def parse_article_date(soup, url):
     # --------------------------------------------------------
 
     for tag in soup.find_all("time"):
-        value = (
-            tag.get("datetime")
-            or tag.get_text(" ", strip=True)
-        )
+        value = tag.get("datetime") or tag.get_text(" ", strip=True)
 
         if not value:
             continue
 
         try:
             dt = pd.to_datetime(value)
-
-            return (
-                dt
-                .to_pydatetime()
-                .replace(tzinfo=None)
-            )
-
+            return dt.to_pydatetime().replace(tzinfo=None)
         except Exception:
             continue
 
-    print(
-        "  Could not determine exact "
-        "publication date:",
-        url,
-    )
-
+    print("  Could not determine exact publication date:", url)
     return None
 
 
@@ -634,10 +528,7 @@ def extract_title(soup):
     h1 = soup.find("h1")
 
     if h1:
-        return h1.get_text(
-            " ",
-            strip=True,
-        )
+        return h1.get_text(" ", strip=True)
 
     return ""
 
@@ -664,26 +555,15 @@ def extract_article_text(soup):
     ]
 
     for p in paragraph_tags:
-        text = p.get_text(
-            " ",
-            strip=True,
-        )
-
-        text = re.sub(
-            r"\s+",
-            " ",
-            text,
-        ).strip()
+        text = p.get_text(" ", strip=True)
+        text = re.sub(r"\s+", " ", text).strip()
 
         if len(text) < 30:
             continue
 
         lower_text = text.lower()
 
-        if any(
-            phrase in lower_text
-            for phrase in unwanted_phrases
-        ):
+        if any(phrase in lower_text for phrase in unwanted_phrases):
             continue
 
         paragraphs.append(text)
@@ -693,11 +573,7 @@ def extract_article_text(soup):
     seen_paragraphs = set()
 
     for paragraph in paragraphs:
-        normalized = re.sub(
-            r"\s+",
-            " ",
-            paragraph,
-        ).strip()
+        normalized = re.sub(r"\s+", " ", paragraph).strip()
 
         if normalized in seen_paragraphs:
             continue
@@ -714,44 +590,23 @@ def extract_article_text(soup):
 
 def scrape_article(url):
     try:
-        response = SESSION.get(
-            url,
-            timeout=30,
-        )
+        response = SESSION.get(url, timeout=30)
 
-        print(
-            "  Article status:",
-            response.status_code,
-        )
+        print("  Article status:", response.status_code)
 
         if response.status_code != 200:
             return None
 
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser",
-        )
+        soup = BeautifulSoup(response.text, "html.parser")
 
         title = extract_title(soup)
+        article_date = parse_article_date(soup, url)
+        article_text = extract_article_text(soup)
 
-        article_date = parse_article_date(
-            soup,
-            url,
-        )
-
-        article_text = extract_article_text(
-            soup
-        )
-
-        print(
-            "  Extracted text length:",
-            len(article_text),
-        )
+        print("  Extracted text length:", len(article_text))
 
         if len(article_text) < 250:
-            print(
-                "  Too little usable article text."
-            )
+            print("  Too little usable article text.")
             return None
 
         return {
@@ -761,10 +616,7 @@ def scrape_article(url):
         }
 
     except Exception as e:
-        print(
-            "  Article request error:",
-            e,
-        )
+        print("  Article request error:", e)
         return None
 
 
@@ -782,14 +634,8 @@ def process_archive_articles(
     page_dates = []
 
     for item in archive_articles:
-        url = clean_url(
-            item.get("url")
-        )
-
-        archive_title = (
-            item.get("archive_title")
-            or ""
-        )
+        url = clean_url(item.get("url"))
+        archive_title = item.get("archive_title") or ""
 
         if not url:
             continue
@@ -805,11 +651,7 @@ def process_archive_articles(
         stats["archive_urls"] += 1
 
         print()
-        print(
-            archive_title
-            if archive_title
-            else url
-        )
+        print(archive_title if archive_title else url)
         print("  URL:", url)
 
         # ----------------------------------------------------
@@ -821,44 +663,21 @@ def process_archive_articles(
         if url_date:
             url_year, url_month = url_date
 
-            start_month = (
-                START_DATE.year,
-                START_DATE.month,
-            )
-
-            end_month = (
-                END_DATE.year,
-                END_DATE.month,
-            )
-
-            article_month = (
-                url_year,
-                url_month,
-            )
+            start_month = (START_DATE.year, START_DATE.month)
+            end_month = (END_DATE.year, END_DATE.month)
+            article_month = (url_year, url_month)
 
             if article_month > end_month:
                 stats["too_new"] += 1
-
-                print(
-                    "  Newer than END_DATE month - skipped"
-                )
+                print("  Newer than END_DATE month - skipped")
                 continue
 
             if article_month < start_month:
                 stats["too_old"] += 1
+                print("  Older than START_DATE month - skipped")
 
-                print(
-                    "  Older than START_DATE month - skipped"
-                )
-
-                # Allows archive pagination to determine that
-                # it has reached articles older than START_DATE.
                 page_dates.append(
-                    datetime(
-                        url_year,
-                        url_month,
-                        1,
-                    )
+                    datetime(url_year, url_month, 1)
                 )
                 continue
 
@@ -868,10 +687,7 @@ def process_archive_articles(
 
         if url in existing_urls:
             stats["already_exists"] += 1
-
-            print(
-                "  Already in Supabase - skipped"
-            )
+            print("  Already in Supabase - skipped")
             continue
 
         # ----------------------------------------------------
@@ -887,23 +703,15 @@ def process_archive_articles(
             continue
 
         stats["scraped"] += 1
-
         article_date = article["published_at"]
 
         if article_date is None:
             stats["no_date"] += 1
-
-            print(
-                "  No valid publication date - skipped"
-            )
+            print("  No valid publication date - skipped")
             continue
 
         page_dates.append(article_date)
-
-        print(
-            "  Date:",
-            article_date.date(),
-        )
+        print("  Date:", article_date.date())
 
         # ----------------------------------------------------
         # EXACT DATE FILTER
@@ -911,18 +719,12 @@ def process_archive_articles(
 
         if article_date > END_DATE:
             stats["too_new"] += 1
-
-            print(
-                "  Newer than END_DATE - skipped"
-            )
+            print("  Newer than END_DATE - skipped")
             continue
 
         if article_date < START_DATE:
             stats["too_old"] += 1
-
-            print(
-                "  Older than START_DATE - skipped"
-            )
+            print("  Older than START_DATE - skipped")
             continue
 
         # ----------------------------------------------------
@@ -930,18 +732,13 @@ def process_archive_articles(
         # ----------------------------------------------------
 
         combined_text = (
-            (
-                article["title"]
-                or archive_title
-                or ""
-            )
+            (article["title"] or archive_title or "")
             + " "
             + article["article_text"]
         )
 
         # ----------------------------------------------------
-        # ENVIRONMENT KEYWORDS
-        # Metadata only.
+        # ENVIRONMENT KEYWORDS - METADATA ONLY
         # ----------------------------------------------------
 
         environment_matches = find_environment_keywords(
@@ -952,9 +749,7 @@ def process_archive_articles(
         # COUNTRY DETECTION
         # ----------------------------------------------------
 
-        country_matches = find_countries(
-            combined_text
-        )
+        country_matches = find_countries(combined_text)
 
         # ----------------------------------------------------
         # REQUIRE PHILIPPINES
@@ -979,10 +774,7 @@ def process_archive_articles(
 
         results.append({
             "source_country": SOURCE_COUNTRY,
-            "title": (
-                article["title"]
-                or archive_title
-            ),
+            "title": article["title"] or archive_title,
             "source": SOURCE_NAME,
             "published_at": article_date.strftime("%Y-%m-%d"),
             "countries": ", ".join(country_matches),
@@ -994,10 +786,7 @@ def process_archive_articles(
         stats["saved"] += 1
 
         print("  MATCH")
-        print(
-            "  Countries:",
-            ", ".join(country_matches),
-        )
+        print("  Countries:", ", ".join(country_matches))
         print(
             "  Environment keywords:",
             ", ".join(environment_matches)
@@ -1027,38 +816,24 @@ def insert_articles_to_supabase(results):
     unique_results = {}
 
     for article in results:
-        url = clean_url(
-            article["url"]
-        )
-
+        url = clean_url(article["url"])
         article["url"] = url
         unique_results[url] = article
 
-    rows_to_insert = list(
-        unique_results.values()
-    )
+    rows_to_insert = list(unique_results.values())
 
     print()
     print("======================================")
     print("SAVING TO SUPABASE")
     print("======================================")
-    print(
-        f"{len(rows_to_insert)} new articles "
-        "ready for insertion."
-    )
+    print(f"{len(rows_to_insert)} new articles ready for insertion.")
 
     inserted_count = 0
     batch_size = 100
 
     try:
-        for start in range(
-            0,
-            len(rows_to_insert),
-            batch_size,
-        ):
-            batch = rows_to_insert[
-                start:start + batch_size
-            ]
+        for start in range(0, len(rows_to_insert), batch_size):
+            batch = rows_to_insert[start:start + batch_size]
 
             response = (
                 supabase
@@ -1068,9 +843,7 @@ def insert_articles_to_supabase(results):
             )
 
             if response.data:
-                inserted_count += len(
-                    response.data
-                )
+                inserted_count += len(response.data)
             else:
                 inserted_count += len(batch)
 
@@ -1082,10 +855,7 @@ def insert_articles_to_supabase(results):
 
     except Exception as e:
         print()
-        print(
-            "Error inserting articles "
-            "into Supabase:"
-        )
+        print("Error inserting articles into Supabase:")
         print(e)
         raise
 
@@ -1105,10 +875,7 @@ def main():
     print("End date:", END_DATE.date())
     print("Source country:", SOURCE_COUNTRY)
     print("Archive:", PHILIPPINES_ARCHIVE_URL)
-    print(
-        "Target countries:",
-        ", ".join(sorted(TARGET_COUNTRIES)),
-    )
+    print("Target countries:", ", ".join(sorted(TARGET_COUNTRIES)))
 
     # ========================================================
     # STEP 1: EXISTING SUPABASE DATA
@@ -1140,24 +907,45 @@ def main():
     # STEP 3: ARCHIVE PAGINATION
     # ========================================================
 
-    for page_number in range(
-        1,
-        MAX_PAGES + 1,
-    ):
+    consecutive_old_pages = 0
+    start_month = (START_DATE.year, START_DATE.month)
+
+    for page_number in range(1, MAX_PAGES + 1):
         print()
         print("======================================")
         print(f"ARCHIVE PAGE {page_number}")
         print("======================================")
 
-        archive_articles = fetch_archive_page(
-            page_number
-        )
-
+        archive_articles = fetch_archive_page(page_number)
         stats["archive_pages"] += 1
 
         if not archive_articles:
             print("No article URLs returned.")
             break
+
+        # ----------------------------------------------------
+        # CHECK DATES IN EVERY ARTICLE URL
+        # ----------------------------------------------------
+        #
+        # This includes URLs that are already in Supabase.
+        # Pagination must not depend on whether an article
+        # needs to be scraped again.
+        # ----------------------------------------------------
+
+        page_months = [
+            parse_date_from_url(item["url"])
+            for item in archive_articles
+        ]
+
+        page_months = [
+            month
+            for month in page_months
+            if month is not None
+        ]
+
+        # ----------------------------------------------------
+        # PROCESS ALL ARTICLES ON CURRENT PAGE
+        # ----------------------------------------------------
 
         oldest_date = process_archive_articles(
             archive_articles,
@@ -1170,21 +958,60 @@ def main():
         print()
         print(
             "Oldest date detected on page:",
-            oldest_date.date()
-            if oldest_date
-            else "Unknown",
+            oldest_date.date() if oldest_date else "Unknown",
         )
 
-        # Mongabay archive is newest -> oldest.
-        # Stop once the archive reaches articles before START_DATE.
-        if (
-            oldest_date is not None
-            and oldest_date < START_DATE
-        ):
+        # ----------------------------------------------------
+        # DETERMINE WHETHER THE ENTIRE PAGE IS OLD
+        # ----------------------------------------------------
+        #
+        # A page counts as old only when every article URL
+        # has a recognizable date and every date is earlier
+        # than START_DATE's month.
+        #
+        # An article from the start month or any later month
+        # resets the consecutive-old-pages counter.
+        # ----------------------------------------------------
+
+        if page_months and len(page_months) == len(archive_articles):
+            all_articles_old = all(
+                month < start_month
+                for month in page_months
+            )
+        else:
+            # Unknown URL dates: continue pagination rather
+            # than risk stopping too early.
+            all_articles_old = False
+
+        if all_articles_old:
+            consecutive_old_pages += 1
+
+            print(
+                f"Old archive page "
+                f"{consecutive_old_pages}/"
+                f"{CONSECUTIVE_OLD_PAGES_TO_STOP}"
+            )
+
+        else:
+            if consecutive_old_pages > 0:
+                print(
+                    "Found a page containing an article from "
+                    "the start month or later."
+                )
+                print("Resetting old-page counter.")
+
+            consecutive_old_pages = 0
+
+        # ----------------------------------------------------
+        # STOP ONLY AFTER THREE CONSECUTIVE OLD PAGES
+        # ----------------------------------------------------
+
+        if consecutive_old_pages >= CONSECUTIVE_OLD_PAGES_TO_STOP:
             print()
             print(
-                "Reached articles older "
-                "than START_DATE."
+                f"{CONSECUTIVE_OLD_PAGES_TO_STOP} consecutive "
+                "archive pages contain only articles older "
+                "than START_DATE month."
             )
             print("Stopping pagination.")
             break
@@ -1214,9 +1041,7 @@ def main():
     # STEP 5: INSERT INTO SUPABASE
     # ========================================================
 
-    inserted_count = insert_articles_to_supabase(
-        results
-    )
+    inserted_count = insert_articles_to_supabase(results)
 
     # ========================================================
     # FINAL SUMMARY
@@ -1227,10 +1052,7 @@ def main():
     print("FINISHED")
     print("======================================")
     print("New articles found:", len(results))
-    print(
-        "New articles inserted into Supabase:",
-        inserted_count,
-    )
+    print("New articles inserted into Supabase:", inserted_count)
     print("Supabase table:", RAW_TABLE)
     print()
 
