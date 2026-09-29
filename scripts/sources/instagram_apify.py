@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -10,10 +11,6 @@ from lingua import Language, LanguageDetectorBuilder
 APIFY_TOKEN = "apify_api_uk96vRreCQ05EaWGOAPhYDqauRAlgo13Vl4r"
 
 ACTOR_ID = "khadinakbar/instagram-hashtag-scraper"
-
-HASHTAG = "climatechangesg" #climate change topics in sg
-TOPIC = "Climate Change"
-COUNTRY = "Singapore"
 
 POST_COLUMNS = [
     "topic",
@@ -100,50 +97,46 @@ COMMENTS_CSV = os.path.join(
 
 client = ApifyClient(APIFY_TOKEN)
 
-actor = client.actor(ACTOR_ID)
+if str(Path(__file__).resolve().parents[2]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.supabase.instagram_pipeline import monthly_keyword_specs
 
-run_input = {
-    "hashtags": [
-        HASHTAG
-    ],
+keyword_specs = monthly_keyword_specs(MONTH_START.strftime("%Y-%m-%d"))
 
-    # The actor uses a rolling freshness window; the exact calendar-month
-    # boundary is enforced after retrieval below.
-    "datePosted": "last-month",
 
-    # Use the actor's supported per-hashtag limit before local filtering.
-    "maxPostsPerHashtag": 510,
-
-    # Only keep posts with some meaningful engagement
-    "minimumLikes": 10,
-
-    # Include sampled comments
-    "includeComments": True,
-
-    # Return full metadata
-    "outputMode": "full"
-}
+def hashtag_for(keyword: str, country: str) -> str:
+    country_suffix = "sg" if country.casefold() == "singapore" else country
+    return re.sub(r"[^a-z0-9]", "", f"{keyword}{country_suffix}".casefold())
 
 print("\n======================================")
 print("INSTAGRAM HASHTAG SCRAPER")
 print("======================================")
 
-print(f"Hashtag: #{HASHTAG}")
 print(f"Collecting posts from {MONTH_START.date()} through {(CURRENT_MONTH_START - pd.Timedelta(days=1)).date()}")
-print("Starting Apify Actor...")
+print(f"Loaded {len(keyword_specs)} top-three monthly keyword specifications.")
 
-run = actor.call(
-    run_input=run_input
-)
+items = []
+for spec in keyword_specs:
+    hashtag = hashtag_for(spec["keyword"], spec["country"])
+    print(f"Starting Apify Actor for #{hashtag} ({spec['topic']}, {spec['country']})...")
+    run = client.actor(ACTOR_ID).call(
+        run_input={
+            "hashtags": [hashtag],
+            "datePosted": "last-month",
+            "maxPostsPerHashtag": 2,
+            "minimumLikes": 10,
+            "includeComments": True,
+            "outputMode": "full",
+        }
+    )
+    for item in client.dataset(run.default_dataset_id).list_items().items:
+        item["topic"] = spec["topic"]
+        item["country"] = spec["country"]
+        item["hashtag"] = hashtag
+        items.append(item)
 
 print("\nScraping completed.")
-print("Retrieving dataset...")
-
-dataset_id = run.default_dataset_id
-
-items = client.dataset(
-    dataset_id
-).list_items().items
+print("Retrieving datasets completed.")
 
 
 print(
@@ -190,8 +183,8 @@ print(
 )
 
 posts_df = raw_df.reindex(columns=POST_COLUMNS).copy()
-posts_df["topic"] = TOPIC
-posts_df["country"] = COUNTRY
+posts_df["topic"] = posts_df["topic"].fillna("")
+posts_df["country"] = posts_df["country"].fillna("")
 
 
 #remove duplicate posts
@@ -225,6 +218,14 @@ def is_english(text):
         return False
     return language_detector.detect_language_of(text) == Language.ENGLISH
 
+def append_unique_rows(new_df, csv_file, duplicate_column):
+    if os.path.exists(csv_file):
+        existing_df = pd.read_csv(csv_file)
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        combined_df = new_df
+
+    return combined_df.drop_duplicates(subset=[duplicate_column], keep="last")
 
 posts_df = posts_df[
     posts_df["caption"].apply(is_english)
@@ -290,13 +291,13 @@ for item in items:
         comments_rows.append({
 
             "topic":
-                TOPIC,
+                item.get("topic"),
 
             "country":
                 post_country_by_id.get(post_id),
 
             "hashtag":
-                HASHTAG,
+                item.get("hashtag"),
 
             "post_id":
                 post_id,
@@ -361,25 +362,17 @@ comments_df = comments_df[
     comments_df["post_id"].isin(valid_post_ids)
 ].copy()
 
-if not comments_df.empty:
+posts_df = append_unique_rows(posts_df, POSTS_CSV, "post_id")
+comments_df = append_unique_rows(comments_df, COMMENTS_CSV, "comment_id")
 
-    comments_df.to_csv(
-        COMMENTS_CSV,
-        index=False,
-        encoding="utf-8-sig"
-    )
+# Keep comments consistent with the merged posts
+comments_df = comments_df[comments_df["post_id"].isin(set(posts_df["post_id"].dropna()))].copy()
 
-    print(
-        f"Saved {len(comments_df)} comments "
-        f"to {COMMENTS_CSV}"
-    )
+posts_df.to_csv(POSTS_CSV, index=False, encoding="utf-8-sig")
+comments_df.to_csv(COMMENTS_CSV, index=False, encoding="utf-8-sig")
 
-else:
-
-    print(
-        "\nNo sampled comments "
-        "were returned by the Actor."
-    )
+if comments_df.empty:
+    print("\nNo sampled comments were returned by the Actor.")
 
 # =====================================================
 # SUMMARY
