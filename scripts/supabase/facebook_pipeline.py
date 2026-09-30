@@ -36,6 +36,7 @@ POST_COLUMNS = (
     "shares",
     "primary_topic",
     "matched_topics",
+    "matched_keywords",
 )
 
 
@@ -47,6 +48,7 @@ COMMENT_COLUMNS = (
     "country",
     "source_name",
     "primary_topic",
+    "matched_keywords",
     "published_at",
     "text",
     "likes",

@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 import pandas as pd
 from dotenv import load_dotenv
 from apify_client import ApifyClient
+from lingua import Language, LanguageDetectorBuilder
 
 
 # =========================================================
@@ -79,6 +80,26 @@ COMMENT_RUN_MAX_COST_USD = 1.00
 
 
 # =========================================================
+# TEST MODE
+# =========================================================
+
+# A small, paid Apify run of the keyword-filtered regional pages
+# only. While on, the script:
+#   - scrapes fresh posts (ignores the post cache),
+#   - scrapes only the sources below, with their own post limits,
+#   - keeps all scraped posts instead of only the previous month,
+#   - skips comment scraping and the Supabase upload,
+#   - writes every output under data/raw/test/.
+# Set to False to run the normal pipeline.
+TEST_MODE = False
+
+TEST_SOURCE_POST_LIMITS = {
+    "Mongabay": 40,
+    "Greenpeace Southeast Asia": 15,
+}
+
+
+# =========================================================
 # CACHE + UPLOAD SETTINGS
 # =========================================================
 
@@ -86,6 +107,9 @@ COMMENT_RUN_MAX_COST_USD = 1.00
 # no additional Apify charges are incurred.
 USE_CACHED_POSTS = True
 USE_CACHED_COMMENTS = True
+
+if TEST_MODE:
+    USE_CACHED_POSTS = False
 
 # Set FACEBOOK_OFFLINE_TEST=1 to run only against existing local caches.
 # This mode refuses fresh Apify requests and skips Supabase uploads.
@@ -100,6 +124,9 @@ UPLOAD_TO_SUPABASE = True
 
 DATA_DIR = REPO_ROOT / "data" / "raw"
 
+if TEST_MODE:
+    DATA_DIR = DATA_DIR / "test"
+
 POSTS_CACHE_FILE = DATA_DIR / "facebook_posts_raw.json"
 COMMENTS_CACHE_FILE = DATA_DIR / "facebook_comments_raw.json"
 
@@ -111,6 +138,14 @@ REJECTED_POSTS_FILE = (
     DATA_DIR / "facebook_posts_rejected.json"
 )
 
+NON_ENGLISH_POSTS_FILE = (
+    DATA_DIR / "facebook_posts_non_english.json"
+)
+
+TOPIC_KEYWORDS_CACHE_FILE = (
+    DATA_DIR / "facebook_topic_keywords.json"
+)
+
 NORMALISED_POSTS_FILE = (
     DATA_DIR / "facebook_posts_normalised.json"
 )
@@ -120,13 +155,58 @@ NORMALISED_COMMENTS_FILE = (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-POSTS_CSV = SCRIPT_DIR / "facebook_posts.csv"
-COMMENTS_CSV = SCRIPT_DIR / "facebook_comments.csv"
+CSV_DIR = DATA_DIR if TEST_MODE else SCRIPT_DIR
+POSTS_CSV = CSV_DIR / "facebook_posts.csv"
+COMMENTS_CSV = CSV_DIR / "facebook_comments.csv"
 
 
 # =========================================================
 # FACEBOOK SOURCES
 # =========================================================
+
+# Regional pages cover more than one country. A source with
+# "filter_keywords" keeps only posts that mention one of these
+# terms (see split_posts_by_source_keywords).
+#
+# Terms shared with other countries are deliberately excluded:
+# "borneo" (Malaysia, Brunei), "sunda" and "wallacea" (regional),
+# "mekong" (Laos, Cambodia, Vietnam) and "andaman" (Myanmar, India).
+INDONESIA_KEYWORDS = [
+    "indonesia",
+    "indonesian",
+    "jakarta",
+    "sumatra",
+    "sumatran",
+    "java",
+    "javanese",
+    "kalimantan",
+    "sulawesi",
+    "papua",
+    "bali",
+    "lombok",
+    "komodo",
+    "aceh",
+    "riau",
+    "maluku",
+    "halmahera",
+    "raja ampat",
+    "nusantara",
+    "nusa tenggara",
+    "flores",
+    "bantargebang",
+]
+
+THAILAND_KEYWORDS = [
+    "thailand",
+    "thai",
+    "bangkok",
+    "chiang mai",
+    "phuket",
+    "krabi",
+    "songkhla",
+    "hat yai",
+    "isan",
+]
 
 FACEBOOK_SOURCES = [
     # Singapore
@@ -164,20 +244,14 @@ FACEBOOK_SOURCES = [
     },
 
     # Indonesia
+    # WALHI, WWF Indonesia and Mongabay Indonesia were removed because
+    # they post mainly in Indonesian. The global Mongabay page posts in
+    # English but covers every region, so keep Indonesian stories only.
     {
         "country": "Indonesia",
-        "source_name": "WALHI",
-        "url": "https://www.facebook.com/WALHI",
-    },
-    {
-        "country": "Indonesia",
-        "source_name": "WWF Indonesia",
-        "url": "https://www.facebook.com/WWFIndonesia",
-    },
-    {
-        "country": "Indonesia",
-        "source_name": "Mongabay Indonesia",
-        "url": "https://www.facebook.com/MongabayIndonesia",
+        "source_name": "Mongabay",
+        "url": "https://www.facebook.com/mongabay",
+        "filter_keywords": INDONESIA_KEYWORDS,
     },
 
     # Philippines
@@ -196,22 +270,21 @@ FACEBOOK_SOURCES = [
         "source_name": "Climate Change Commission",
         "url": "https://www.facebook.com/CCCPhl",
     },
+    {
+        "country": "Philippines",
+        "source_name": "Greenpeace Philippines",
+        "url": "https://www.facebook.com/greenpeaceph",
+    },
 
     # Thailand
+    # Greenpeace Thailand, WWF Thailand and EnLAW were removed because
+    # they post mainly in Thai. Greenpeace Southeast Asia posts in
+    # English across the region, so keep Thai stories only.
     {
         "country": "Thailand",
-        "source_name": "Greenpeace Thailand",
-        "url": "https://www.facebook.com/greenpeaceth",
-    },
-    {
-        "country": "Thailand",
-        "source_name": "WWF Thailand",
-        "url": "https://www.facebook.com/wwfthailand",
-    },
-    {
-        "country": "Thailand",
-        "source_name": "EnLAW",
-        "url": "https://www.facebook.com/Enlawthai2001",
+        "source_name": "Greenpeace Southeast Asia",
+        "url": "https://www.facebook.com/GreenpeaceSEA",
+        "filter_keywords": THAILAND_KEYWORDS,
     },
 
     # Brunei
@@ -232,603 +305,26 @@ FACEBOOK_SOURCES = [
     },
 ]
 
+# Sources actually scraped in this run. A source may carry an
+# optional "post_limit" that overrides POST_LIMIT_PER_PAGE.
+if TEST_MODE:
+    SCRAPE_SOURCES = [
+        {
+            **source,
+            "post_limit": TEST_SOURCE_POST_LIMITS[source["source_name"]],
+        }
+        for source in FACEBOOK_SOURCES
+        if source["source_name"] in TEST_SOURCE_POST_LIMITS
+    ]
 
-# =========================================================
-# ENVIRONMENTAL TOPICS
-# =========================================================
-
-# The original classifier was mainly English-only. This version
-# includes terms observed in the cached ASEAN Facebook data,
-# especially Malay/Indonesian, Thai and Vietnamese.
-#
-# Important: these are classification keywords, not translations
-# shown to end users.
-
-ENVIRONMENT_TOPICS = {
-
-    "air_pollution_haze": [
-        # English
-        "haze",
-        "air pollution",
-        "air quality",
-        "pm2.5",
-        "psi",
-        "smoke haze",
-        "smoke plume",
-        "clean air",
-
-        # Malay / Indonesian
-        "jerebu",
-        "pencemaran udara",
-        "kualiti udara",
-        "kabut asap",
-        "polusi udara",
-        "udara bersih",
-        "asap karhutla",
-
-        # Thai
-        "มลพิษทางอากาศ",
-        "ฝุ่น pm2.5",
-        "ฝุ่นพิษ",
-        "อากาศสะอาด",
-        "หมอกควัน",
-
-        # Vietnamese
-        "ô nhiễm không khí",
-        "chất lượng không khí",
-        "không khí sạch",
-
-        # Filipino
-        "polusyon sa hangin",
-        "malinis na hangin",
-    ],
-
-    "climate_change_heat": [
-        # English
-        "climate change",
-        "global warming",
-        "climate crisis",
-        "climate emergency",
-        "climate action",
-        "extreme heat",
-        "heatwave",
-        "heat wave",
-        "rising temperature",
-        "climate adaptation",
-        "climate resilience",
-        "extreme weather",
-
-        # Malay / Indonesian
-        "perubahan iklim",
-        "pemanasan global",
-        "krisis iklim",
-        "cuaca ekstrem",
-        "gelombang haba",
-        "gelombang panas",
-
-        # Thai
-        "การเปลี่ยนแปลงสภาพภูมิอากาศ",
-        "ภาวะโลกร้อน",
-        "โลกร้อน",
-        "วิกฤตสภาพภูมิอากาศ",
-        "คลื่นความร้อน",
-
-        # Vietnamese
-        "biến đổi khí hậu",
-        "nóng lên toàn cầu",
-        "khủng hoảng khí hậu",
-        "nắng nóng cực đoan",
-
-        # Filipino
-        "pagbabago ng klima",
-    ],
-
-    "waste_recycling": [
-        # English
-        "recycling",
-        "recycle",
-        "plastic waste",
-        "plastic pollution",
-        "food waste",
-        "e-waste",
-        "electronic waste",
-        "single-use plastic",
-        "single use plastic",
-        "waste reduction",
-        "zero waste",
-        "circular economy",
-        "litter",
-        "littering",
-        "trash",
-        "marine debris",
-
-        # Malay / Indonesian
-        "kitar semula",
-        "sisa plastik",
-        "sampah plastik",
-        "sisa makanan",
-        "pencemaran plastik",
-        "plastik sekali guna",
-        "daur ulang",
-        "limbah plastik",
-        "sampah makanan",
-        "polusi plastik",
-        "plastik sekali pakai",
-        "sampah",
-
-        # Thai
-        "ขยะ",
-        "รีไซเคิล",
-        "มลพิษพลาสติก",
-        "ขยะพลาสติก",
-        "พลาสติกใช้ครั้งเดียว",
-
-        # Vietnamese
-        "rác thải",
-        "tái chế",
-        "rác thải nhựa",
-        "ô nhiễm nhựa",
-        "nhựa dùng một lần",
-
-        # Filipino
-        "basura",
-        "pagre-recycle",
-        "polusyon sa plastik",
-    ],
-
-    "biodiversity_conservation": [
-        # English
-        "biodiversity",
-        "wildlife",
-        "conservation",
-        "habitat",
-        "endangered",
-        "ecosystem",
-        "nature reserve",
-        "species",
-        "threatened species",
-        "pollinator",
-        "pollination",
-        "native tree",
-        "native trees",
-        "forest restoration",
-        "ecological restoration",
-        "coral",
-        "mangrove",
-        "seagrass",
-        "hornbill",
-        "orchid",
-        "orangutan",
-        "whale shark",
-        "fungi",
-
-        # Malay
-        "biodiversiti",
-        "hidupan liar",
-        "pemuliharaan",
-        "spesies terancam",
-        "bakau",
-        "pemulihan hutan",
-        "khazanah alam",
-
-        # Indonesian
-        "keanekaragaman hayati",
-        "satwa liar",
-        "konservasi",
-        "spesies terancam",
-        "restorasi hutan",
-        "orangutan",
-        "hiu paus",
-
-        # Thai
-        "ความหลากหลายทางชีวภาพ",
-        "สัตว์ป่า",
-        "อนุรักษ์",
-        "ระบบนิเวศ",
-        "ถิ่นอาศัย",
-        "สูญพันธุ์",
-        "ป่าชายเลน",
-        "ฟื้นฟูป่า",
-
-        # Vietnamese
-        "đa dạng sinh học",
-        "động vật hoang dã",
-        "bảo tồn",
-        "hệ sinh thái",
-        "môi trường sống",
-        "tuyệt chủng",
-        "rừng ngập mặn",
-        "phục hồi rừng",
-
-        # Filipino
-        "pangangalaga",
-        "konserbasyon",
-    ],
-
-    "renewable_energy": [
-        # English
-        "renewable energy",
-        "solar energy",
-        "solar power",
-        "solar panel",
-        "clean energy",
-        "green energy",
-        "wind energy",
-        "hydropower",
-
-        # Malay / Indonesian
-        "tenaga boleh baharu",
-        "tenaga suria",
-        "tenaga bersih",
-        "energi terbarukan",
-        "tenaga surya",
-        "energi bersih",
-
-        # Thai
-        "พลังงานหมุนเวียน",
-        "พลังงานแสงอาทิตย์",
-        "พลังงานสะอาด",
-        "พลังงานลม",
-
-        # Vietnamese
-        "năng lượng tái tạo",
-        "năng lượng mặt trời",
-        "năng lượng sạch",
-        "năng lượng gió",
-    ],
-
-    "energy_policy_transition": [
-        # English
-        "energy transition",
-        "power sector",
-        "electricity generation",
-        "power generation",
-        "power plant",
-        "gas plant",
-        "coal plant",
-        "nuclear energy",
-        "nuclear power",
-        "energy policy",
-        "power development plan",
-        "pdp2026",
-        "electricity plan",
-        "energy security",
-        "fossil fuel",
-        "fossil fuels",
-        "data center",
-        "data centre",
-
-        # Malay / Indonesian
-        "transisi energi",
-        "kebijakan energi",
-        "pembangkit listrik",
-        "bahan bakar fosil",
-        "peralihan tenaga",
-        "dasar tenaga",
-        "loji janakuasa",
-        "bahan api fosil",
-
-        # Thai
-        "เปลี่ยนผ่านพลังงาน",
-        "พลังงานไทย",
-        "โรงไฟฟ้า",
-        "ไฟฟ้า",
-        "แผนพัฒนากำลังผลิตไฟฟ้า",
-        "ก๊าซฟอสซิล",
-        "เชื้อเพลิงฟอสซิล",
-        "นิวเคลียร์",
-        "ดาต้าเซ็นเตอร์",
-
-        # Vietnamese
-        "chuyển dịch năng lượng",
-        "chính sách năng lượng",
-        "nhà máy điện",
-        "nhiên liệu hóa thạch",
-    ],
-
-    "carbon_emissions": [
-        # English
-        "carbon emissions",
-        "carbon emission",
-        "carbon footprint",
-        "greenhouse gas",
-        "greenhouse gases",
-        "net zero",
-        "decarbonisation",
-        "decarbonization",
-        "carbon neutral",
-        "carbon dioxide",
-        "co2 emissions",
-        "carbon storage",
-        "blue carbon",
-
-        # Malay / Indonesian
-        "pelepasan karbon",
-        "gas rumah hijau",
-        "neutral karbon",
-        "jejak karbon",
-        "emisi karbon",
-        "gas rumah kaca",
-
-        # Thai
-        "การปล่อยคาร์บอน",
-        "ก๊าซเรือนกระจก",
-        "คาร์บอนสุทธิเป็นศูนย์",
-        "คาร์บอนฟุตพรินต์",
-
-        # Vietnamese
-        "phát thải carbon",
-        "khí nhà kính",
-        "dấu chân carbon",
-        "trung hòa carbon",
-        "carbon xanh",
-    ],
-
-    "water_flooding": [
-        # English
-        "water pollution",
-        "water conservation",
-        "water scarcity",
-        "flooding",
-        "flash flood",
-        "flood",
-        "drought",
-        "water security",
-        "water level",
-        "dam level",
-        "dry spell",
-        "river drying",
-        "watershed",
-        "waterway",
-        "waterways",
-
-        # Malay / Indonesian
-        "pencemaran air",
-        "pemuliharaan air",
-        "kekurangan air",
-        "banjir",
-        "kemarau",
-        "paras air",
-        "empangan",
-        "sungai",
-        "polusi air",
-        "kekeringan",
-        "tinggi muka air",
-        "bendungan",
-        "daerah aliran sungai",
-
-        # Thai
-        "มลพิษทางน้ำ",
-        "น้ำท่วม",
-        "ภัยแล้ง",
-        "ระดับน้ำ",
-        "เขื่อน",
-        "ลุ่มน้ำ",
-
-        # Vietnamese
-        "ô nhiễm nước",
-        "lũ lụt",
-        "ngập lụt",
-        "hạn hán",
-        "mực nước",
-        "lưu vực",
-    ],
-
-    "deforestation_land_use": [
-        # English
-        "deforestation",
-        "forest clearing",
-        "land clearing",
-        "land use",
-        "forest fire",
-        "forest fires",
-        "peat fire",
-        "peatland",
-        "wildfire",
-        "wildfires",
-        "forest loss",
-        "illegal logging",
-        "forest crime",
-        "land conversion",
-
-        # Malay
-        "penebangan hutan",
-        "pembukaan tanah",
-        "kebakaran hutan",
-        "tanah gambut",
-        "pembalakan haram",
-        "guna tanah",
-
-        # Indonesian
-        "deforestasi",
-        "pembukaan lahan",
-        "kebakaran hutan",
-        "karhutla",
-        "gambut",
-        "pembalakan liar",
-        "alih fungsi lahan",
-
-        # Thai
-        "ตัดไม้ทำลายป่า",
-        "ไฟป่า",
-        "บุกรุกป่า",
-        "การใช้ที่ดิน",
-        "ป่าพรุ",
-
-        # Vietnamese
-        "phá rừng",
-        "cháy rừng",
-        "chuyển đổi đất",
-        "khai thác gỗ trái phép",
-        "đất than bùn",
-    ],
-
-    "sustainable_consumption": [
-        # English
-        "sustainability",
-        "sustainable living",
-        "sustainable consumption",
-        "green living",
-        "eco-friendly",
-        "eco friendly",
-        "reuse",
-        "reusable",
-        "sustainable lifestyle",
-        "responsible consumption",
-        "sustainable choice",
-        "sustainable choices",
-
-        # Malay / Indonesian
-        "kelestarian",
-        "kehidupan lestari",
-        "penggunaan mampan",
-        "mesra alam",
-        "guna semula",
-        "mampan",
-        "keberlanjutan",
-        "gaya hidup berkelanjutan",
-        "konsumsi berkelanjutan",
-        "ramah lingkungan",
-        "guna ulang",
-
-        # Thai
-        "ความยั่งยืน",
-        "การบริโภคอย่างยั่งยืน",
-        "เป็นมิตรต่อสิ่งแวดล้อม",
-        "ใช้ซ้ำ",
-
-        # Vietnamese
-        "bền vững",
-        "tiêu dùng bền vững",
-        "sống xanh",
-        "thân thiện với môi trường",
-        "tái sử dụng",
-    ],
-
-    "marine_ocean": [
-        # English
-        "ocean",
-        "oceans",
-        "marine conservation",
-        "marine ecosystem",
-        "coral reef",
-        "coral reefs",
-        "seagrass",
-        "blue carbon",
-        "high seas",
-        "ocean pollution",
-        "coastal ecosystem",
-
-        # Malay / Indonesian
-        "ekosistem laut",
-        "terumbu karang",
-        "padang lamun",
-        "laut lepas",
-        "pencemaran laut",
-
-        # Thai
-        "มหาสมุทร",
-        "ทะเล",
-        "แนวปะการัง",
-        "หญ้าทะเล",
-        "ระบบนิเวศทางทะเล",
-
-        # Vietnamese
-        "đại dương",
-        "rạn san hô",
-        "cỏ biển",
-        "hệ sinh thái biển",
-    ],
-
-    "environmental_governance_justice": [
-        # English
-        "environmental justice",
-        "environmental governance",
-        "environmental law",
-        "environmental policy",
-        "public participation",
-        "environmental impact assessment",
-        "environmental rights",
-        "right to a healthy environment",
-        "environmental interests",
-        "ecological disaster",
-        "indigenous land",
-        "indigenous community",
-        "indigenous communities",
-        "land rights",
-
-        # Malay
-        "tadbir urus alam sekitar",
-        "undang-undang alam sekitar",
-        "keadilan alam sekitar",
-        "hak tanah",
-        "orang asli",
-
-        # Indonesian
-        "keadilan lingkungan",
-        "tata kelola lingkungan",
-        "hukum lingkungan",
-        "hak atas tanah",
-        "masyarakat adat",
-        "bencana ekologis",
-
-        # Thai
-        "ธรรมาภิบาลด้านสิ่งแวดล้อม",
-        "กฎหมายสิ่งแวดล้อม",
-        "ความยุติธรรมด้านสิ่งแวดล้อม",
-        "สิทธิชุมชน",
-
-        # Vietnamese
-        "quản trị môi trường",
-        "luật môi trường",
-        "công lý môi trường",
-        "quyền đất đai",
-        "cộng đồng bản địa",
-    ],
-
-    "agriculture_food_systems": [
-        # English
-        "sustainable agriculture",
-        "food system",
-        "food systems",
-        "food security",
-        "agriculture",
-        "farming",
-        "farmer",
-        "farmers",
-        "pesticide",
-        "pesticides",
-        "genetically modified",
-        "genetically engineered",
-        "gmo",
-        "agroecology",
-
-        # Malay / Indonesian
-        "pertanian mampan",
-        "keselamatan makanan",
-        "petani",
-        "racun perosak",
-        "diubah suai secara genetik",
-        "pertanian berkelanjutan",
-        "ketahanan pangan",
-        "pestisida",
-        "rekayasa genetika",
-
-        # Thai
-        "เกษตรยั่งยืน",
-        "ความมั่นคงทางอาหาร",
-        "เกษตรกร",
-        "สารกำจัดศัตรูพืช",
-        "ดัดแปลงพันธุกรรม",
-
-        # Vietnamese
-        "nông nghiệp bền vững",
-        "an ninh lương thực",
-        "nông dân",
-        "thuốc trừ sâu",
-        "biến đổi gen",
-    ],
-}
+    if len(SCRAPE_SOURCES) != len(TEST_SOURCE_POST_LIMITS):
+        raise SystemExit(
+            "TEST_SOURCE_POST_LIMITS names a source that is not in "
+            "FACEBOOK_SOURCES: "
+            f"{sorted(TEST_SOURCE_POST_LIMITS)}"
+        )
+else:
+    SCRAPE_SOURCES = FACEBOOK_SOURCES
 
 
 # =========================================================
@@ -861,6 +357,25 @@ def is_in_previous_calendar_month(value):
         return False
 
     return MONTH_START <= timestamp < CURRENT_MONTH_START
+
+
+def keep_reporting_month(posts):
+    """
+    Keep error records and posts from the previous calendar month.
+
+    Test mode keeps every scraped post: the actor returns the newest
+    posts first, so a small test would otherwise lose most of them.
+    """
+
+    if TEST_MODE:
+        return posts
+
+    return [
+        post
+        for post in posts
+        if not post.get("postId")
+        or is_in_previous_calendar_month(post.get("time"))
+    ]
 
 
 def get_page_name(post):
@@ -997,6 +512,297 @@ def build_classification_text(post):
     return " ".join(text_parts)
 
 
+# =========================================================
+# PER-SOURCE KEYWORD FILTER
+# =========================================================
+
+# Fields checked for a source's filter_keywords: the caption, the
+# shared link's title, and the shared link URL (article slugs such
+# as "indonesia-deforestation-surges" often name the country).
+SOURCE_FILTER_FIELDS = (
+    "text",
+    "previewTitle",
+    "link",
+)
+
+
+def compile_source_keyword_pattern(keywords):
+    """Compile one case-insensitive, word-bounded regex for a source."""
+
+    # Longest first so "nusa tenggara" wins over shorter overlaps.
+    terms = sorted(
+        {normalise_text(keyword) for keyword in keywords if keyword},
+        key=len,
+        reverse=True,
+    )
+
+    return re.compile(
+        r"(?<!\w)(?:"
+        + "|".join(re.escape(term) for term in terms)
+        + r")(?!\w)",
+        re.IGNORECASE,
+    )
+
+
+def build_source_filter_text(post):
+    """Combine the fields used for per-source keyword matching."""
+
+    text_parts = [
+        post.get(field)
+        for field in SOURCE_FILTER_FIELDS
+        if isinstance(post.get(field), str)
+    ]
+
+    # NFKC also folds Facebook's bold/italic Unicode letters to ASCII.
+    haystack = normalise_text(" ".join(text_parts))
+
+    return haystack.replace("-", " ").replace("_", " ")
+
+
+def find_source_for_post(post, sources_by_url):
+    """Match a post to its configured source via facebookUrl/inputUrl."""
+
+    for source_url in (
+        post.get("facebookUrl"),
+        post.get("inputUrl"),
+    ):
+        source = sources_by_url.get(
+            canonicalise_url(source_url)
+        )
+
+        if source:
+            return source
+
+    return None
+
+
+def print_raw_source_urls(url_counts, limit=10):
+    """Print the raw facebookUrl/inputUrl pairs behind a warning."""
+
+    for (facebook_url, input_url), count in url_counts.most_common(limit):
+        print(
+            f"    {count} post(s): facebookUrl={facebook_url!r}, "
+            f"inputUrl={input_url!r}"
+        )
+
+
+def split_posts_by_source_keywords(posts, sources):
+    """
+    Split posts into (kept, dropped) using each source's filter_keywords.
+
+    Sources without "filter_keywords" keep all posts. Error records
+    (no postId) are kept so source errors are still reported. Posts
+    that cannot be matched to a configured source are kept, but a
+    warning is printed because the filter could not be applied.
+    """
+
+    patterns = {
+        source["source_name"]: compile_source_keyword_pattern(
+            source["filter_keywords"]
+        )
+        for source in sources
+        if source.get("filter_keywords")
+    }
+
+    if not patterns:
+        return posts, []
+
+    sources_by_url = {
+        canonicalise_url(source["url"]): source
+        for source in sources
+    }
+
+    kept_posts = []
+    dropped_posts = []
+    kept_counts = Counter()
+    dropped_counts = Counter()
+    seen_urls = Counter()
+    unmatched_urls = Counter()
+
+    for post in posts:
+        if not post.get("postId"):
+            kept_posts.append(post)
+            continue
+
+        raw_urls = (
+            post.get("facebookUrl"),
+            post.get("inputUrl"),
+        )
+        seen_urls[raw_urls] += 1
+
+        source = find_source_for_post(post, sources_by_url)
+
+        if source is None:
+            unmatched_urls[raw_urls] += 1
+            kept_posts.append(post)
+            continue
+
+        source_name = source["source_name"]
+        pattern = patterns.get(source_name)
+
+        if pattern is None:
+            kept_posts.append(post)
+        elif pattern.search(build_source_filter_text(post)):
+            kept_posts.append(post)
+            kept_counts[source_name] += 1
+        else:
+            dropped_posts.append(post)
+            dropped_counts[source_name] += 1
+
+    print("\nPer-source keyword filter:")
+
+    for source_name in patterns:
+        print(
+            f"{source_name}: kept {kept_counts[source_name]}, "
+            f"dropped {dropped_counts[source_name]}"
+        )
+
+    if unmatched_urls:
+        print(
+            f"\n!!! WARNING: {sum(unmatched_urls.values())} post(s) "
+            "could not be matched to a configured source, so the "
+            "keyword filter was NOT applied to them (they were kept). "
+            "Fix the source URL matching. Raw URLs seen:"
+        )
+        print_raw_source_urls(unmatched_urls)
+
+    for source_name in patterns:
+        if kept_counts[source_name] + dropped_counts[source_name] == 0:
+            print(
+                f"\n!!! WARNING: keyword-filtered source "
+                f"{source_name!r} has 0 recognised posts. Check that "
+                "its configured URL matches what Apify returns. "
+                "Raw URLs seen:"
+            )
+
+            if seen_urls:
+                print_raw_source_urls(seen_urls)
+            else:
+                print("    (no posts with a postId)")
+
+    return kept_posts, dropped_posts
+
+
+def print_keyword_filter_samples(
+    kept_posts,
+    dropped_posts,
+    sources,
+    sample_size=5
+):
+    """Print sample kept/dropped posts for each keyword-filtered source."""
+
+    for source in sources:
+        if not source.get("filter_keywords"):
+            continue
+
+        source_name = source["source_name"]
+
+        for label, group in (
+            ("KEPT", kept_posts),
+            ("DROPPED", dropped_posts),
+        ):
+            samples = [
+                post
+                for post in group
+                if post.get("postId")
+                and post.get("source_name") == source_name
+            ][:sample_size]
+
+            print(
+                f"\n--- {source_name}: sample {label} posts "
+                f"({len(samples)}) ---"
+            )
+
+            for post in samples:
+                text = " ".join(str(post.get("text") or "").split())
+
+                print(f"* {text[:150] or '(no text)'}")
+                print(f"  link: {post.get('link') or '(none)'}")
+
+
+def print_source_run_summary(
+    sources,
+    scraped_posts,
+    dropped_posts,
+    rejected_posts,
+    english_posts,
+    non_english_posts
+):
+    """
+    Print scraped / keyword-filter / language counts per source.
+
+    Language detection runs on environmental posts only, so
+    "No topic" posts are not counted as English or non-English.
+    """
+
+    def count_by_source(posts):
+        return Counter(
+            post.get("source_name") or "Unknown"
+            for post in posts
+            if post.get("postId")
+        )
+
+    scraped = count_by_source(scraped_posts)
+    dropped = count_by_source(dropped_posts)
+    rejected = count_by_source(rejected_posts)
+    english = count_by_source(english_posts)
+    non_english = count_by_source(non_english_posts)
+
+    source_names = [source["source_name"] for source in sources]
+    source_names += sorted(set(scraped) - set(source_names))
+
+    print("\n==============================")
+    print("PER-SOURCE SUMMARY")
+    print("==============================")
+    print(
+        f"{'Source':32} {'Scraped':>7} {'KW kept':>7} "
+        f"{'KW drop':>7} {'No topic':>8} {'English':>7} {'Non-EN':>7}"
+    )
+
+    for source_name in source_names:
+        print(
+            f"{source_name[:32]:32} "
+            f"{scraped[source_name]:>7} "
+            f"{scraped[source_name] - dropped[source_name]:>7} "
+            f"{dropped[source_name]:>7} "
+            f"{rejected[source_name]:>8} "
+            f"{english[source_name]:>7} "
+            f"{non_english[source_name]:>7}"
+        )
+
+
+language_detector = (
+    LanguageDetectorBuilder
+    .from_all_languages()
+    .with_minimum_relative_distance(0.25)
+    .build()
+)
+
+
+def is_english(text):
+    """Return True when the post text is confidently detected as English."""
+
+    text = str(text or "").strip()
+    if len(text) < 10:
+        return False
+    return language_detector.detect_language_of(text) == Language.ENGLISH
+
+
+def split_english_posts(posts):
+    """Return (english_posts, non_english_posts) based on post text only."""
+
+    english_posts = []
+    non_english_posts = []
+
+    for post in posts:
+        if is_english(post.get("text")):
+            english_posts.append(post)
+        else:
+            non_english_posts.append(post)
+
+    return english_posts, non_english_posts
+
+
 def save_json(data, filepath):
     """Save local cache/output without repeated Apify calls."""
 
@@ -1054,48 +860,70 @@ def fetch_facebook_posts(
 
     apify_client = require_apify_client()
 
-    page_urls = [
-        {"url": source["url"]}
-        for source in sources
-    ]
+    # resultsLimit applies to every page in a run, so sources with a
+    # different "post_limit" are scraped in separate runs. The cost cap
+    # is split across those runs so the total never exceeds it.
+    sources_by_limit = defaultdict(list)
 
-    run_input = {
-        "startUrls": page_urls,
-        "resultsLimit": limit,
-        "onlyPostsNewerThan": POST_DATE_RANGE,
-        "onlyPostsOlderThan": CURRENT_MONTH_START.date().isoformat(),
-        "captionText": False,
-    }
+    for source in sources:
+        sources_by_limit[
+            source.get("post_limit", limit)
+        ].append(source)
 
-    print(
-        f"\nStarting Facebook post scraper "
-        f"for {len(page_urls)} page(s)..."
-    )
-
-    run = apify_client.actor(
-        POSTS_ACTOR
-    ).call(
-        run_input=run_input,
-        max_total_charge_usd=(
-            POST_RUN_MAX_COST_USD
-        ),
-    )
-
-    if run is None:
-        print(
-            "Facebook post scraper failed "
-            "to start."
-        )
+    if not sources_by_limit:
         return []
 
-    dataset_id = run.default_dataset_id
-
-    items = (
-        apify_client
-        .dataset(dataset_id)
-        .list_items()
-        .items
+    run_max_cost_usd = (
+        POST_RUN_MAX_COST_USD
+        / len(sources_by_limit)
     )
+
+    items = []
+
+    for post_limit, limit_sources in sources_by_limit.items():
+        page_urls = [
+            {"url": source["url"]}
+            for source in limit_sources
+        ]
+
+        run_input = {
+            "startUrls": page_urls,
+            "resultsLimit": post_limit,
+            "onlyPostsNewerThan": POST_DATE_RANGE,
+            "onlyPostsOlderThan": CURRENT_MONTH_START.date().isoformat(),
+            "captionText": False,
+        }
+
+        print(
+            f"\nStarting Facebook post scraper "
+            f"for {len(page_urls)} page(s), "
+            f"up to {post_limit} post(s) each..."
+        )
+
+        run = apify_client.actor(
+            POSTS_ACTOR
+        ).call(
+            run_input=run_input,
+            max_total_charge_usd=(
+                run_max_cost_usd
+            ),
+        )
+
+        if run is None:
+            print(
+                "Facebook post scraper failed "
+                "to start."
+            )
+            continue
+
+        dataset_id = run.default_dataset_id
+
+        items.extend(
+            apify_client
+            .dataset(dataset_id)
+            .list_items()
+            .items
+        )
 
     source_lookup = {
         canonicalise_url(source["url"]): source
@@ -1149,20 +977,88 @@ def fetch_facebook_posts(
 
     # The actor accepts a lower boundary only. Enforce both boundaries
     # locally so the output contains exactly the previous calendar month.
-    return [
-        post
-        for post in enriched_posts
-        if not post.get("postId")
-        or is_in_previous_calendar_month(post.get("time"))
-    ]
+    return keep_reporting_month(enriched_posts)
 
 
 # =========================================================
-# ENVIRONMENTAL CLASSIFICATION
+# MONTHLY TOPIC CLASSIFICATION
 # =========================================================
 
-def classify_environmental_post(post):
-    """Identify environmental topics appearing in one Facebook post."""
+# Posts are classified with the same keywords the X, Reddit,
+# Instagram and YouTube collectors search for: the top three
+# monthly_topic_stats topics per country, written by
+# scripts/News_processed/News_topic.py.
+
+def load_monthly_topic_keywords():
+    """
+    Return {country: {topic_name: [keywords]}} for the reporting month.
+
+    Keywords are read from Supabase and cached locally so offline
+    runs can reuse them without contacting Supabase.
+    """
+
+    if OFFLINE_TEST_MODE:
+        if not TOPIC_KEYWORDS_CACHE_FILE.exists():
+            raise SystemExit(
+                "Offline test requires the cached topic keywords file: "
+                f"{TOPIC_KEYWORDS_CACHE_FILE}"
+            )
+
+        print("\nUsing cached monthly topic keywords...")
+        keyword_specs = load_json(TOPIC_KEYWORDS_CACHE_FILE)
+    else:
+        from scripts.supabase.instagram_pipeline import (
+            monthly_keyword_specs,
+        )
+
+        keyword_specs = monthly_keyword_specs(
+            MONTH_START.date().isoformat()
+        )
+        save_json(keyword_specs, TOPIC_KEYWORDS_CACHE_FILE)
+
+    topic_keywords = defaultdict(lambda: defaultdict(list))
+
+    for spec in keyword_specs:
+        topic_keywords[spec["country"]][spec["topic"]].append(
+            spec["keyword"]
+        )
+
+    return {
+        country: dict(topics)
+        for country, topics in topic_keywords.items()
+    }
+
+
+def print_monthly_topic_keywords(topic_keywords, sources):
+    """Show the keywords in use and warn about uncovered countries."""
+
+    print("\n==============================")
+    print(f"MONTHLY TOPIC KEYWORDS ({MONTH_START.date().isoformat()})")
+    print("==============================")
+
+    for country in sorted({source["country"] for source in sources}):
+        topics = topic_keywords.get(country)
+
+        if not topics:
+            print(
+                f"!!! WARNING: {country} has no monthly topic keywords; "
+                "all of its posts will be rejected."
+            )
+            continue
+
+        print(country)
+
+        for topic, keywords in topics.items():
+            print(f"    {topic}: {', '.join(keywords)}")
+
+
+def classify_environmental_post(post, topic_keywords):
+    """
+    Match one Facebook post against its country's monthly keywords.
+
+    Returns the post with primary_topic, matched_topics and
+    matched_keywords added, or None when no keyword matches.
+    """
 
     # Error/no-item records are useful diagnostics but are not posts.
     if not post.get("postId"):
@@ -1172,7 +1068,10 @@ def classify_environmental_post(post):
 
     matched_topics = {}
 
-    for topic, keywords in ENVIRONMENT_TOPICS.items():
+    for topic, keywords in topic_keywords.get(
+        post.get("country"),
+        {}
+    ).items():
         matches = [
             keyword
             for keyword in keywords
@@ -1204,12 +1103,20 @@ def classify_environmental_post(post):
     classified_post = dict(post)
     classified_post["primary_topic"] = primary_topic
     classified_post["matched_topics"] = matched_topics
+    # Same field name as the other platforms; clean_social.py reads it.
+    classified_post["matched_keywords"] = list(
+        dict.fromkeys(
+            keyword
+            for keywords in matched_topics.values()
+            for keyword in keywords
+        )
+    )
 
     return classified_post
 
 
-def split_environmental_posts(posts):
-    """Return (environmental_posts, rejected_posts)."""
+def split_environmental_posts(posts, topic_keywords):
+    """Return (topic_matched_posts, rejected_posts)."""
 
     environmental_posts = []
     rejected_posts = []
@@ -1220,7 +1127,7 @@ def split_environmental_posts(posts):
             continue
 
         classified_post = (
-            classify_environmental_post(post)
+            classify_environmental_post(post, topic_keywords)
         )
 
         if classified_post:
@@ -1231,16 +1138,6 @@ def split_environmental_posts(posts):
             rejected_posts.append(post)
 
     return environmental_posts, rejected_posts
-
-
-def filter_environmental_posts(posts):
-    """Backwards-compatible helper returning only accepted posts."""
-
-    environmental_posts, _ = (
-        split_environmental_posts(posts)
-    )
-
-    return environmental_posts
 
 
 # =========================================================
@@ -1260,7 +1157,7 @@ def print_topic_distribution(posts):
     total = len(posts)
 
     print("\n==============================")
-    print("ENVIRONMENTAL TOPIC DISTRIBUTION")
+    print("MONTHLY TOPIC DISTRIBUTION")
     print("==============================")
 
     for topic, count in counts.most_common():
@@ -1298,7 +1195,7 @@ def print_source_coverage(posts):
     print("SOURCE COVERAGE")
     print("==============================")
 
-    for source in FACEBOOK_SOURCES:
+    for source in SCRAPE_SOURCES:
         source_name = source["source_name"]
         print(
             f"{source_name}: "
@@ -1503,6 +1400,9 @@ def refresh_comment_metadata(comments, posts):
             comment["primary_topic"] = (
                 parent_post.get("primary_topic")
             )
+            comment["matched_keywords"] = (
+                parent_post.get("matched_keywords", [])
+            )
 
         enriched_comments.append(comment)
 
@@ -1655,6 +1555,10 @@ def normalise_facebook_post(post):
             "matched_topics",
             {}
         ),
+        "matched_keywords": post.get(
+            "matched_keywords",
+            []
+        ),
     }
 
 
@@ -1670,6 +1574,10 @@ def normalise_facebook_comment(comment):
         "source_name": comment.get("source_name"),
         "primary_topic": comment.get(
             "primary_topic"
+        ),
+        "matched_keywords": comment.get(
+            "matched_keywords",
+            []
         ),
         "published_at": comment.get("date"),
         "text": comment.get("text"),
@@ -1751,8 +1659,32 @@ if __name__ == "__main__":
             "Apify and Supabase are disabled."
         )
 
+    if TEST_MODE:
+        print(
+            "TEST MODE: scraping "
+            + ", ".join(
+                f"{source['source_name']} "
+                f"(up to {source['post_limit']} posts)"
+                for source in SCRAPE_SOURCES
+            )
+            + f"; outputs go to {DATA_DIR}"
+        )
+
     # =====================================================
-    # STEP 1: COLLECT / LOAD POSTS
+    # STEP 1: LOAD MONTHLY TOPIC KEYWORDS
+    # =====================================================
+
+    # Loaded before scraping so a missing month stops the run
+    # before any Apify charges are incurred.
+    topic_keywords = load_monthly_topic_keywords()
+
+    print_monthly_topic_keywords(
+        topic_keywords,
+        SCRAPE_SOURCES
+    )
+
+    # =====================================================
+    # STEP 1B: COLLECT / LOAD POSTS
     # =====================================================
 
     if OFFLINE_TEST_MODE and not POSTS_CACHE_FILE.exists():
@@ -1769,17 +1701,32 @@ if __name__ == "__main__":
         posts = load_json(POSTS_CACHE_FILE)
     else:
         posts = fetch_facebook_posts(
-            FACEBOOK_SOURCES
+            SCRAPE_SOURCES
         )
         save_json(posts, POSTS_CACHE_FILE)
 
+    scraped_posts = posts
+
+    # Regional pages (e.g. Mongabay) must mention their assigned
+    # country. The raw cache stays unfiltered so keyword lists can be
+    # tuned offline without another Apify run.
+    (
+        posts,
+        keyword_dropped_posts,
+    ) = split_posts_by_source_keywords(
+        posts,
+        SCRAPE_SOURCES
+    )
+
+    if TEST_MODE:
+        print_keyword_filter_samples(
+            posts,
+            keyword_dropped_posts,
+            SCRAPE_SOURCES
+        )
+
     # Apply the exact month boundary to both fresh and cached records.
-    posts = [
-        post
-        for post in posts
-        if not post.get("postId")
-        or is_in_previous_calendar_month(post.get("time"))
-    ]
+    posts = keep_reporting_month(posts)
 
     usable_posts = [
         post
@@ -1810,16 +1757,19 @@ if __name__ == "__main__":
     print_source_errors(posts)
 
     # =====================================================
-    # STEP 2: CLASSIFY ENVIRONMENTAL POSTS
+    # STEP 2: CLASSIFY BY MONTHLY TOPIC KEYWORDS
     # =====================================================
 
     (
         environmental_posts,
         rejected_posts,
-    ) = split_environmental_posts(posts)
+    ) = split_environmental_posts(
+        posts,
+        topic_keywords
+    )
 
     print(
-        f"\nEnvironmental posts found: "
+        f"\nPosts matching monthly topic keywords: "
         f"{len(environmental_posts)}"
     )
 
@@ -1831,7 +1781,7 @@ if __name__ == "__main__":
         )
 
         print(
-            f"Environmental classification rate: "
+            f"Monthly topic match rate: "
             f"{classification_rate:.1f}% "
             f"of usable posts"
         )
@@ -1849,6 +1799,43 @@ if __name__ == "__main__":
     save_json(
         rejected_posts,
         REJECTED_POSTS_FILE
+    )
+
+    # Posts are not translated downstream (clean_social.py only
+    # translates comments), so keep English posts only. This runs
+    # before comment selection so no Apify budget is spent on
+    # comments for posts that would be dropped.
+    (
+        environmental_posts,
+        non_english_posts,
+    ) = split_english_posts(environmental_posts)
+
+    print(
+        f"\nEnglish environmental posts kept: "
+        f"{len(environmental_posts)}"
+    )
+    print(
+        f"Non-English environmental posts dropped: "
+        f"{len(non_english_posts)}"
+    )
+
+    print_country_distribution(
+        non_english_posts,
+        "NON-ENGLISH POSTS DROPPED BY COUNTRY"
+    )
+
+    save_json(
+        non_english_posts,
+        NON_ENGLISH_POSTS_FILE
+    )
+
+    print_source_run_summary(
+        SCRAPE_SOURCES,
+        scraped_posts,
+        keyword_dropped_posts,
+        rejected_posts,
+        environmental_posts,
+        non_english_posts
     )
 
     # =====================================================
@@ -1883,28 +1870,6 @@ if __name__ == "__main__":
         f"post(s)."
     )
 
-    # for post in selected_posts:
-    #     print(
-    #         f"\nCountry: "
-    #         f"{post.get('country')}"
-    #     )
-    #     print(
-    #         f"Topic: "
-    #         f"{post.get('primary_topic')}"
-    #     )
-    #     print(
-    #         f"Source: "
-    #         f"{post.get('source_name')}"
-    #     )
-    #     print(
-    #         f"Facebook comment count: "
-    #         f"{post.get('comments')}"
-    #     )
-    #     print(
-    #         f"URL: "
-    #         f"{post.get('url')}"
-    #     )
-
     print_country_distribution(
         selected_posts,
         "SELECTED COMMENT POSTS BY COUNTRY"
@@ -1914,7 +1879,12 @@ if __name__ == "__main__":
     # STEP 5: SCRAPE / LOAD COMMENTS
     # =====================================================
 
-    if selected_posts:
+    if TEST_MODE:
+        print(
+            "\nTEST MODE: comment scraping skipped"
+        )
+        comments = []
+    elif selected_posts:
         if OFFLINE_TEST_MODE and not COMMENTS_CACHE_FILE.exists():
             raise SystemExit(
                 "Offline test requires the cached comments file: "
@@ -1984,21 +1954,6 @@ if __name__ == "__main__":
         f"{len(comments)}"
     )
 
-    comment_country_counts = Counter(
-        comment.get("country") or "Unknown"
-        for comment in comments
-    )
-
-    # if comments:
-    #     print("\n==============================")
-    #     print("COMMENTS BY COUNTRY")
-    #     print("==============================")
-
-    #     for country, count in (
-    #         comment_country_counts.most_common()
-    #     ):
-    #         print(f"{country}: {count}")
-
     # =====================================================
     # STEP 6: NORMALISE + SAVE
     # =====================================================
@@ -2026,19 +1981,22 @@ if __name__ == "__main__":
     save_csv(
         normalised_posts,
         POSTS_CSV,
-        json_columns=["matched_topics"],
+        json_columns=["matched_topics", "matched_keywords"],
     )
 
     save_csv(
         normalised_comments,
         COMMENTS_CSV,
+        json_columns=["matched_keywords"],
     )
 
     # =====================================================
     # STEP 7: SUPABASE SYNC
     # =====================================================
 
-    if UPLOAD_TO_SUPABASE and not OFFLINE_TEST_MODE:
+    if TEST_MODE:
+        print("\nTEST MODE: Supabase upload skipped")
+    elif UPLOAD_TO_SUPABASE and not OFFLINE_TEST_MODE:
         print("\n==============================")
         print("SYNCING TO SUPABASE")
         print("==============================")
@@ -2073,12 +2031,16 @@ if __name__ == "__main__":
         len(usable_posts)
     )
     print(
-        "Environmental posts:",
+        "English environmental posts:",
         len(environmental_posts)
     )
     print(
         "Rejected usable posts:",
         len(rejected_posts)
+    )
+    print(
+        "Non-English posts dropped:",
+        len(non_english_posts)
     )
     print(
         "Posts selected for comments:",
