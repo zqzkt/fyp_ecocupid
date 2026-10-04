@@ -2,14 +2,11 @@
 
 ## Purpose
 
-This document explains how the project collects public X data for later sentiment analysis and stores it in Supabase.
+This document explains how the project collects public X data and stores it in Supabase for analysis.
 
-The collector focuses on English-language public discussion related to (TEMPORARY):
-
-- Climate change
-- Sustainability
-- Renewable energy
-- Plastic pollution
+The collector uses monthly topic keywords from `monthly_topic_stats`. Replies
+are collected in all languages; non-English comments are translated during
+cleaning before they reach sentiment analysis.
 
 The geographic scope is limited to six primary ASEAN countries:
 
@@ -32,31 +29,25 @@ without keeping a local `data/` folder.
 | `scripts/supabase/__init__.py` | Makes the local Supabase integration importable as a Python package. |
 | Supabase tables | Permanently store posts and replies. |
 
-## Daily Data Flow
+## Data Flow
 
 ```text
-Scheduled job
+Call the X endpoint
     |
     v
-Read latest post ID from Supabase
+Fetch posts and replies
     |
     v
-Call X Recent Search with since_id
+Upsert raw posts in x_posts and raw replies in x_replies
     |
     v
-Collect up to the configured number of new posts
+Clean posts and comments into clean_posts and clean_comments
     |
     v
-Select high-discussion conversations
+Translate non-English comments during cleaning
     |
     v
-Fetch a small sample of replies
-    |
-    v
-Normalize rows in memory
-    |
-    v
-Upsert users, posts, and replies into Supabase
+Derive environment_sentiment
 ```
 
 No permanent JSON or JSONL files are created by the current collection path.
@@ -75,19 +66,23 @@ The token file must remain private and must not be committed to Git. The collect
 
 ## 2. Search Query
 
-The collector sends one keyword search query to the X Recent Search endpoint:
+The collector reads `country`, `topic_name`, `topic_rank`, and `monthly_keywords`
+from Supabase `monthly_topic_stats`. It keeps rows where `topic_rank <= 3`,
+extracts the comma-separated `monthly_keywords`, and deduplicates them by
+country. It then sends one country-specific query per country with data:
 
 ```text
-("climate change" OR sustainability OR "renewable energy" OR "plastic pollution")
-lang:en -is:retweet
-(Singapore OR Malaysia OR Indonesia OR Philippines OR Thailand OR Brunei OR "Brunei Darussalam")
+(<country keyword 1> OR <country keyword 2> OR ...)
+lang:en -is:retweet ("<country>")
 ```
 
 Important query behavior:
 
 - `lang:en` keeps the sample focused on English posts.
 - `-is:retweet` excludes retweets.
-- The country terms are combined into one query, so the country scope does not require six separate searches.
+- Each country query contains only that country's top-three topic rows, preventing the X 512-character query limit from truncating the vocabulary.
+- The post cap is divided across countries so the first country cannot consume the entire sample.
+- The query is no longer hardcoded to a fixed environmental keyword list.
 - Country labels are inferred from author location, post text, or supported place-country values. A post can remain `unspecified` when there is not enough evidence.
 
 ## 3. Supabase Checkpointing
@@ -131,19 +126,19 @@ This is useful for recovery or backfilling, but it can cause repeated API reads.
 
 ## 4. Default Collection Size
 
-The default settings are intentionally moderate:
+The defaults collect a broader sample while keeping the estimated maximum below the spend cap:
 
 | Setting | Default |
 | --- | ---: |
-| New seed posts | 40 |
-| Reply conversations | 5 |
-| Replies per conversation | 10 |
-| Maximum seed posts hard cap | 50 |
+| New seed posts | 150 |
+| Reply conversations | 15 |
+| Replies per conversation | 20 |
+| Maximum seed posts hard cap | 250 |
 | User expansions | Disabled; `x_users` is not written |
 | Reply collection | Enabled |
-| Default estimated spend limit | `$2.00` |
+| Default estimated spend limit | `$5.00` |
 
-The reply conversations are selected from seed posts with the highest reply counts, using engagement as a tie-breaker. This prioritizes conversations likely to provide more sentiment-rich discussion.
+The reply conversations are selected from seed posts with the highest reply counts, using engagement as a tie-breaker. This prioritizes active discussions.
 
 ## 5. Cost Control
 
@@ -166,9 +161,9 @@ estimated cost = post reads * $0.005 + detail reads * $0.005
 With the defaults:
 
 ```text
-40 seed posts + (5 conversations * 10 replies) = 90 post reads
-90 post reads + 90 detail reads
-(90 * $0.005) + (90 * $0.005) = $0.90
+150 seed posts + (15 conversations * 20 replies) = 450 post reads
+450 post reads + 450 detail reads
+(450 * $0.005) + (450 * $0.005) = $4.50
 ```
 
 The script refuses to call the API if the estimate exceeds `--max-spend`.
@@ -194,7 +189,7 @@ ignored by the Supabase sync.
 Reply collection is a separate search for selected conversations. For each selected seed post, the collector builds a query like:
 
 ```text
-conversation_id:<conversation ID> is:reply lang:en
+conversation_id:<conversation ID> is:reply
 ```
 
 The collector then:
@@ -276,6 +271,8 @@ Replies include:
 - Collection timestamp
 
 Replies are stored in `x_replies`, not mixed into the normal `x_posts` table.
+The reply search does not filter by language so the cleaner can translate
+non-English comments before writing `clean_comments`.
 
 ### Analysis columns
 
@@ -285,13 +282,6 @@ The `x_posts` table includes these analysis-oriented columns:
 | --- | --- | --- |
 | `impression_count` | `bigint` | Twitter/X's public impression count for the post, when returned by the API. |
 | `matched_keywords` | `text[]` | The environmental query phrases matched in the post text. |
-
-The current keyword vocabulary is:
-
-- `climate change`
-- `sustainability`
-- `renewable energy`
-- `plastic pollution`
 
 Country terms are not placed in `matched_keywords`; country classification is stored separately in `inferred_country`.
 
@@ -365,6 +355,17 @@ This performs the following sequence:
 
 This command is suitable for a daily scheduler such as `cron`, GitHub Actions, or another job runner.
 
+To force a fresh endpoint call from the pipeline entry point and then run the
+full raw → clean → sentiment flow, run:
+
+```bash
+python scripts/supabase/twitter_pipeline.py
+```
+
+The pipeline entry point invokes the collector with `--force`, upserts raw
+records to `x_posts` and `x_replies`, runs the cleaner, and then derives
+`environment_sentiment`. The collector's configured spend cap still applies.
+
 ## 12. Monthly Job
 
 Run the monthly job through the Supabase pipeline on the first day of each month:
@@ -384,9 +385,30 @@ The job:
 7. Uploads users, posts, and replies directly to Supabase.
 8. The shared Supabase upload function runs `scripts/cleaning/clean_social.py`,
     which refreshes `clean_posts` and `clean_comments` from all available raw
-    platform tables.
+    platform tables, translating non-English comments.
+9. It runs `scripts/sentiment/sentiment_analysis.py --all` to derive
+    `environment_sentiment` from the refreshed clean tables.
 
 The monthly run has a `$5.00` maximum estimate. With user expansions disabled, its configured maximum is 250 post/detail reads, costing `$2.50` at the current rates. This is a large bounded monthly sample, not an unlimited export: obtaining every post from a busy month would require a larger budget and may require X full-archive access.
+
+## Emotion model
+
+The multilabel classifier is trained on the official GoEmotions train split and
+uses its dev split to tune per-label thresholds. It predicts the 27 GoEmotions
+emotions plus `neutral`; each post or comment may receive multiple non-neutral
+emotions, while `neutral` is exclusive. `environment_sentiment.dominant_emotions`
+stores up to three emotion labels ranked by count (ties are alphabetical). Run
+training and apply the count-column migrations before deriving aggregates:
+
+```bash
+python scripts/sentiment/train_emotion_model.py
+```
+
+Apply `scripts/supabase/migrations/005_goemotions_multilabel_counts.sql` and
+`scripts/supabase/migrations/006_top_three_dominant_emotions.sql` in the Supabase
+SQL Editor. Emotion count columns can sum to more than `total_items` because a
+text can receive multiple emotion labels. The official data source and paper
+are documented in `scripts/sentiment/dataset/goemotions/README.md`.
 
 On any day other than the first, the job exits without calling X:
 
@@ -402,28 +424,7 @@ python scripts/supabase/twitter_pipeline.py --monthly --run-now
 
 X full-archive access is required for the monthly command. If the account does not have that access, X may return `403` even though the daily recent-search command works.
 
-### macOS automatic scheduling
-
-The repository includes [scripts/supabase/com.ecocupid.monthly.plist](../scripts/supabase/com.ecocupid.monthly.plist), which runs the monthly command automatically at 02:00 on day 1 of every month through macOS `launchd`.
-
-Install it for the current macOS user:
-
-```bash
-mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-cp scripts/supabase/com.ecocupid.monthly.plist "$HOME/Library/LaunchAgents/com.ecocupid.monthly.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.ecocupid.monthly.plist"
-```
-
-Check its registration:
-
-```bash
-launchctl print "gui/$(id -u)/com.ecocupid.monthly"
-```
-
-Logs are written to:
-
-- `~/Library/Logs/ecocupid-monthly.log`
-- `~/Library/Logs/ecocupid-monthly.error.log`
+The monthly command is run manually; no automatic scheduler is included.
 
 ## 13. Useful Commands
 
@@ -439,10 +440,14 @@ Run a fresh search while ignoring the checkpoint:
 python scripts/sources/twitter.py --force
 ```
 
-Collect more posts for a one-off run, subject to the spend limit:
+The default fresh run requests up to 150 posts and samples up to 20 replies
+from each of the 15 highest-reply conversations. Its estimated maximum is
+`$4.50`, under the default `$5.00` spend cap.
+
+Override these limits for a one-off run, subject to the spend limit:
 
 ```bash
-python scripts/sources/twitter.py --max-posts 40 --max-spend 1.00
+python scripts/sources/twitter.py --max-posts 150 --max-reply-conversations 15 --max-replies-per-post 20 --max-spend 5.00
 ```
 
 Collect without replies or users for troubleshooting:
@@ -466,17 +471,18 @@ Supabase upload failures also stop the job. The data remains in Supabase for bat
 
 ## 15. Analysis Considerations
 
-The stored sample is suitable for later sentiment analysis, but the following limitations should be considered:
+The stored sample has the following limitations for downstream analysis:
 
 - X Recent Search only covers the API's available recent-search window.
 - The daily sample is capped and is not a complete census of all public discussion.
-- English filtering excludes discussion in other languages.
+- Replies are sampled, not exhaustive; non-English replies are translated
+  during cleaning.
 - Country inference is heuristic and can be `unspecified`.
 - Reply sampling favors conversations with higher reply counts, which may introduce selection bias.
 - User expansion data describes public profile fields at collection time and may change later.
 - Engagement counts are snapshots and can change after collection.
 
-For more accurate findings, report the collection window, sample sizes, country coverage, number of unspecified records, and reply-selection method alongside sentiment results.
+Report the collection window, sample sizes, country coverage, number of unspecified records, and reply-selection method alongside analysis results.
 
 ## 16. Current Architecture Summary
 
@@ -493,8 +499,8 @@ The key design choices are:
 
 ## 17. Cross-Platform Cleaning
 
-Raw data remains in the platform-specific tables, while sentiment analysis uses
-two shared tables:
+Raw data remains in the platform-specific tables, while cross-platform analysis
+uses two shared tables:
 
 - `clean_posts`: original posts/videos from X, Reddit, YouTube, or Instagram.
 - `clean_comments`: replies/comments from X, Reddit, YouTube, or Instagram.
@@ -507,20 +513,18 @@ Sources are safely ignored when their raw tables are empty.
 
 ### Fields kept
 
-The shared schema keeps fields needed for the proposal's sentiment-analysis
-workflow and for reproducibility:
+The shared schema keeps fields needed for analysis and reproducibility:
 
 | Field | Purpose |
-| --- | --- |
 | `source_id`, `platform`, `source_type`, `source_table` | Trace each clean record back to its source without mixing platforms. |
 | `original_text`, `cleaned_text` | Preserve auditability while giving NLP a normalized input. |
-| `lang` | Language filtering and model selection. |
+| `lang` | Source language and translation audit. |
 | `inferred_country` | ASEAN comparison. |
 | `author_id` | Anonymous author-level grouping without storing profiles. |
 | `conversation_id`, `parent_source_id` | Reconstruct discussion structure. |
 | `created_at` | Time-based analysis and monthly grouping. |
 | `matched_keywords` | Topic-level analysis. |
-| Engagement counts and `impression_count` | Engagement and reach controls/covariates. |
+| Engagement counts and `impression_count` | Engagement and reach analysis. |
 | `cleaned_at` | Track the cleaning version/time. |
 
 ### Text cleaning rules
@@ -528,6 +532,10 @@ workflow and for reproducibility:
 For every post and comment:
 
 1. Remove `@mentions`.
+Emoji conversion uses the attached `emoji` package's `demojize` function with
+square-bracket delimiters, so compound emoji, skin-tone variants, flags, and
+newer emoji are handled consistently. The dependency is declared in
+`requirements.txt`.
 2. Replace emoji with square-bracket labels such as `[happy]`, `[sad]`, or `[seedling]`.
 3. Normalize repeated whitespace.
 4. Keep the original text separately; never overwrite raw data.
@@ -544,6 +552,20 @@ Then run the cleaner from the repository root:
 python scripts/cleaning/clean_social.py
 ```
 
+For comments with a known non-English language, the cleaner uses Google Cloud
+Translation to translate the text to English. When a comment has no language
+metadata, Cloud Translation detects its language during translation. Configure
+Google Application Default Credentials for a project with the Cloud Translation
+API enabled before running the cleaner. For local development, authenticate with:
+
+```bash
+gcloud auth application-default login
+```
+
+In deployed environments, provide credentials through the standard Google Cloud
+ADC mechanism, such as `GOOGLE_APPLICATION_CREDENTIALS` pointing to a service
+account credentials file.
+
 The cleaner is idempotent: rerunning it updates the same `source_id` rows rather
 than creating duplicates. This requires the migration to be applied first.
 
@@ -551,3 +573,8 @@ Every project upload through the shared Supabase pipeline runs this cleaner
 automatically after the raw upload has succeeded. If a future platform collector
 writes to `reddit_posts` or `reddit_comments` through the same pipeline, those
 rows will be included on that run.
+
+Emoji conversion uses the attached `emoji` package's `demojize` function with
+square-bracket delimiters, so compound emoji, skin-tone variants, flags, and
+newer emoji are handled consistently. The dependency is declared in
+`requirements.txt`.
