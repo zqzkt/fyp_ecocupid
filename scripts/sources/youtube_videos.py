@@ -1,16 +1,10 @@
 import os
 import json
-import fetch_comments
+import youtube_comments
 import googleapiclient.discovery
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
-
-# load_dotenv()
-# url = os.environ.get("SUPABASE_URL", "")
-# key = os.environ.get("SUPABASE_KEY", "")
-
-# supabase: Client = create_client(url, key)
 
 def get_monthly_keywords(supabase, country):
     keywords = []
@@ -249,4 +243,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    fetch_comments.main()
+    youtube_comments.main()
