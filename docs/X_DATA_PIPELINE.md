@@ -522,10 +522,19 @@ The shared schema keeps fields needed for analysis and reproducibility:
 | `inferred_country` | ASEAN comparison. |
 | `author_id` | Anonymous author-level grouping without storing profiles. |
 | `conversation_id`, `parent_source_id` | Reconstruct discussion structure. |
-| `created_at` | Time-based analysis and monthly grouping. |
+| `posted_at` | Source timestamp for the post or comment. |
+| `parent_posted_at` | For comments, the linked post's source timestamp; use this when assigning comments to a topic's sentiment month. |
 | `matched_keywords` | Topic-level analysis. |
 | Engagement counts and `impression_count` | Engagement and reach analysis. |
 | `cleaned_at` | Track the cleaning version/time. |
+
+The clean tables store timestamps rather than separate `year` and `month`
+columns. Run `scripts/supabase/migrations/007_clean_social_year_month.sql`
+before refreshing the clean tables. For sentiment aggregation, retain
+`month` and `year` on the aggregate table, and group each linked comment using
+its parent's `parent_posted_at` and inherited topic keywords. This attributes
+the comment to the month its post was published while preserving the comment's
+own timestamp in `posted_at`.
 
 ### Text cleaning rules
 
