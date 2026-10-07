@@ -43,7 +43,8 @@ CLEAN_COLUMNS = (
     "author_id",
     "conversation_id",
     "parent_source_id",
-    "created_at",
+    "posted_at",
+    "parent_posted_at",
     "matched_keywords",
     "like_count",
     "reply_count",
@@ -248,6 +249,76 @@ def source_id(row: dict[str, Any], platform: str, source_type: str) -> str | Non
     return f"{platform}:{source_type}:{value}" if value else None
 
 
+def posted_at(row: dict[str, Any], source_type: str) -> str | None:
+    """Normalize the source post/comment timestamp for timestamptz columns."""
+    timestamp_keys = (
+        (
+            "comment_created_at",
+            "created_at",
+            "created_utc",
+            "timestamp",
+            "published",
+            "published_date",
+            "posted_at",
+            "published_at",
+        )
+        if source_type == "comment"
+        else (
+            "created_at",
+            "created_utc",
+            "timestamp",
+            "published",
+            "published_date",
+            "posted_at",
+            "published_at",
+        )
+    )
+    value = first(row, *timestamp_keys)
+    if value is None:
+        return None
+
+    try:
+        if isinstance(value, (int, float)):
+            timestamp = datetime.fromtimestamp(float(value), timezone.utc)
+        else:
+            text = str(value).strip()
+            try:
+                timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                timestamp = datetime.fromtimestamp(float(text), timezone.utc)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise ValueError(f"Unsupported source timestamp: {value!r}") from exc
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc).isoformat()
+
+
+def inherit_parent_post_metadata(
+    comment: dict[str, Any],
+    parent_id: Any,
+    post_countries: dict[str, Any],
+    post_topics: dict[str, list[str]],
+    post_timestamps: dict[str, str | None],
+) -> None:
+    """Assign linked post metadata used for comment topic and month grouping."""
+    if parent_id is None:
+        return
+
+    parent_key = str(parent_id)
+    parent_country = post_countries.get(parent_key)
+    if parent_country:
+        comment["inferred_country"] = parent_country
+        comment["country"] = parent_country
+
+    inherited_topics = post_topics.get(parent_key, [])
+    if inherited_topics:
+        comment["matched_keywords"] = list(
+            dict.fromkeys(matched_topics(comment) + inherited_topics)
+        )
+    comment["parent_posted_at"] = post_timestamps.get(parent_key)
+
+
 def normalize_row(
     row: dict[str, Any],
     platform: str,
@@ -289,7 +360,7 @@ def normalize_row(
     total = first(row, "total_engagement")
     if total is None:
         total = likes + replies + reposts + quotes
-    return {
+    normalized = {
         "source_id": identifier,
         "platform": platform,
         "source_type": source_type,
@@ -300,17 +371,7 @@ def normalize_row(
         "author_id": first(row, "author_id", "user_id", "author", "author_fullname", "username"),
         "conversation_id": first(row, "conversation_id", "video_id", "media_id", "link_id", "post_id", "parent_post_id"),
         "parent_source_id": first(row, "parent_tweet_id", "parent_id", "parent_post_id"),
-        "created_at": first(
-            row,
-            "created_at",
-            "created_utc",
-            "timestamp",
-            "published",
-            "published_date",
-            "posted_at",
-            "comment_created_at",
-            "published_at",
-        ),
+        "posted_at": posted_at(row, source_type),
         "matched_keywords": matched_topics(row),
         "like_count": likes,
         "reply_count": replies,
@@ -321,6 +382,9 @@ def normalize_row(
         "source_table": source_table,
         "cleaned_at": datetime.now(timezone.utc).isoformat(),
     }
+    if source_type == "comment":
+        normalized["parent_posted_at"] = first(row, "parent_posted_at")
+    return normalized
 
 
 def fetch_rows(session: requests.Session, base_url: str, key: str, table: str) -> list[dict[str, Any]]:
@@ -409,6 +473,11 @@ def main() -> None:
             for row in posts
             if first(row, "post_id", "video_id", "media_id", "id", "name") is not None
         }
+        post_timestamps = {
+            str(first(row, "post_id", "video_id", "media_id", "id", "name")): posted_at(row, "post")
+            for row in posts
+            if first(row, "post_id", "video_id", "media_id", "id", "name") is not None
+        }
         cleaned_posts = []
         excluded_posts = []
         for item in posts:
@@ -425,16 +494,22 @@ def main() -> None:
         eligible_comments = []
         for item in comments:
             comment = dict(item)
-            parent_id = first(comment, "post_id", "video_id", "media_id", "parent_post_id", "conversation_id")
-            if parent_id is not None and str(parent_id) in post_countries:
-                parent_country = post_countries[str(parent_id)]
-                if parent_country:
-                    comment["inferred_country"] = parent_country
-                    comment["country"] = parent_country
-            if not matched_topics(comment) and parent_id is not None:
-                inherited_topics = post_topics.get(str(parent_id), [])
-                if inherited_topics:
-                    comment["matched_keywords"] = inherited_topics
+            parent_id = first(
+                comment,
+                "post_id",
+                "video_id",
+                "media_id",
+                "parent_post_id",
+                "link_id",
+                "conversation_id",
+            )
+            inherit_parent_post_metadata(
+                comment,
+                parent_id,
+                post_countries,
+                post_topics,
+                post_timestamps,
+            )
             if not matched_topics(comment):
                 identifier = source_id(comment, platform, "comment")
                 if identifier:
