@@ -182,7 +182,11 @@ def row_entries(rows: list[dict[str, Any]]) -> list[tuple[str, str, str, int | N
         except (TypeError, ValueError):
             year, month = None, None
         country = normalize_country(row.get("inferred_country"))
+        if country.casefold() == "unspecified":
+            continue
         for topic in row_topics(row):
+            if topic.casefold() == UNSPECIFIED_TOPIC.casefold():
+                continue
             entries.append((country, topic, text, year, month))
     return entries
 
@@ -334,10 +338,6 @@ def main() -> None:
         count = sum(bucket[emotion] for bucket in stats.values())
         if count:
             print(f"  {emotion}: {count}")
-    unspecified_country = sum(bucket["total"] for (country, _topic, _month, _year), bucket in stats.items() if country == "Unspecified")
-    unspecified_topic = sum(bucket["total"] for (_country, topic, _month, _year), bucket in stats.items() if topic == UNSPECIFIED_TOPIC)
-    print(f"Unspecified country: {unspecified_country} items")
-    print(f"Unspecified topic: {unspecified_topic} items")
 
     if args.dry_run:
         print(
