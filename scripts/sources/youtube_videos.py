@@ -5,6 +5,11 @@ import googleapiclient.discovery
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
+from pathlib import Path
+import sys
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 def get_monthly_keywords(supabase, country):
     keywords = []
@@ -27,6 +32,10 @@ def get_previous_month_start():
         year = now.year
         
     return f"{year:04d}-{prev_month:02d}-01T00:00:00Z"
+
+def get_current_month_start():
+    now = datetime.now()
+    return f"{now.year:04d}-{now.month:02d}-01T00:00:00Z"
 
 def format_records(youtube_data, country, token, keyword):
     formatted_records = []
@@ -72,6 +81,7 @@ def fetch_videos(youtube, country, keywords, location, location_radius):
                 pageToken=next_page_token,
                 maxResults=50,
                 publishedAfter=get_previous_month_start(),
+                publishedBefore=get_current_month_start(),
                 q=keyword,
                 regionCode=country,
                 relevanceLanguage="en",
@@ -143,6 +153,7 @@ def fetch_video_stats(youtube, video_ids):
 
     
 def main():
+    
     load_dotenv()
 
     # Supabase setup
