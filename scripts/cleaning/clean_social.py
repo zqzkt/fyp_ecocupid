@@ -249,7 +249,7 @@ def source_id(row: dict[str, Any], platform: str, source_type: str) -> str | Non
     return f"{platform}:{source_type}:{value}" if value else None
 
 
-def posted_at(row: dict[str, Any], source_type: str) -> str | None:
+def posted_at(row: dict[str, Any], source_type: str, platform: str = "") -> str | None:
     """Normalize the source post/comment timestamp for timestamptz columns."""
     timestamp_keys = (
         (
@@ -264,15 +264,18 @@ def posted_at(row: dict[str, Any], source_type: str) -> str | None:
         )
         if source_type == "comment"
         else (
-            "created_at",
+            "published_at",
+            "published_date",
+            "published",
+            "posted_at",
             "created_utc",
             "timestamp",
-            "published",
-            "published_date",
-            "posted_at",
-            "published_at",
+            "created_at",
         )
     )
+    if platform == "youtube" and source_type == "post":
+        # youtube_videos.created_at is the Supabase upload time, not the publish time.
+        timestamp_keys = tuple(key for key in timestamp_keys if key != "created_at")
     value = first(row, *timestamp_keys)
     if value is None:
         return None
@@ -371,7 +374,7 @@ def normalize_row(
         "author_id": first(row, "author_id", "user_id", "author", "author_fullname", "username"),
         "conversation_id": first(row, "conversation_id", "video_id", "media_id", "link_id", "post_id", "parent_post_id"),
         "parent_source_id": first(row, "parent_tweet_id", "parent_id", "parent_post_id"),
-        "posted_at": posted_at(row, source_type),
+        "posted_at": posted_at(row, source_type, platform),
         "matched_keywords": matched_topics(row),
         "like_count": likes,
         "reply_count": replies,
@@ -384,6 +387,9 @@ def normalize_row(
     }
     if source_type == "comment":
         normalized["parent_posted_at"] = first(row, "parent_posted_at")
+        if platform == "youtube":
+            # youtube_comments has no publish time; follow the video's published date.
+            normalized["posted_at"] = normalized["parent_posted_at"]
     return normalized
 
 
@@ -474,7 +480,7 @@ def main() -> None:
             if first(row, "post_id", "video_id", "media_id", "id", "name") is not None
         }
         post_timestamps = {
-            str(first(row, "post_id", "video_id", "media_id", "id", "name")): posted_at(row, "post")
+            str(first(row, "post_id", "video_id", "media_id", "id", "name")): posted_at(row, "post", platform)
             for row in posts
             if first(row, "post_id", "video_id", "media_id", "id", "name") is not None
         }
