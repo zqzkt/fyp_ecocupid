@@ -1,5 +1,4 @@
 import os
-import json
 import googleapiclient.discovery
 from supabase import create_client, Client
 from dotenv import load_dotenv

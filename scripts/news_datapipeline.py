@@ -45,13 +45,19 @@ END_DATE_STR = END_DATE.strftime("%Y-%m-%d")
 # ==========================================================
 
 def run_python_script(script_path, display_name, extra_env=None):
-    print(f"\n{'=' * 70}")
-    print(f"RUNNING: {display_name}")
+    print()
     print("=" * 70)
+    print(f"CURRENTLY RUNNING: {display_name}")
+    print("=" * 70)
+    print(f"File: {script_path}")
+    print("-" * 70)
 
     if not script_path.exists():
-        print(f"SKIPPED: File not found: {script_path}")
-        return {"file": display_name, "status": "FILE NOT FOUND"}
+        print(f"\nSKIPPED: File not found: {script_path}")
+        return {
+            "file": display_name,
+            "status": "FILE NOT FOUND",
+        }
 
     env = os.environ.copy()
 
@@ -59,6 +65,9 @@ def run_python_script(script_path, display_name, extra_env=None):
         env.update(extra_env)
 
     try:
+        # subprocess.run() waits until this script finishes.
+        # Therefore the next scraper will NOT start until the
+        # current scraper has completed.
         result = subprocess.run(
             [sys.executable, str(script_path)],
             cwd=str(script_path.parent),
@@ -67,18 +76,39 @@ def run_python_script(script_path, display_name, extra_env=None):
         )
 
         if result.returncode == 0:
-            print(f"\nCOMPLETED: {display_name}")
-            return {"file": display_name, "status": "SUCCESS"}
+            print()
+            print("-" * 70)
+            print(f"COMPLETED: {display_name}")
+            print("-" * 70)
 
-        print(f"\nFAILED: {display_name} (exit code {result.returncode})")
+            return {
+                "file": display_name,
+                "status": "SUCCESS",
+            }
+
+        print()
+        print("-" * 70)
+        print(
+            f"FAILED: {display_name} "
+            f"(exit code {result.returncode})"
+        )
+        print("-" * 70)
+
         return {
             "file": display_name,
             "status": f"FAILED ({result.returncode})",
         }
 
     except Exception as e:
-        print(f"\nERROR running {display_name}: {e}")
-        return {"file": display_name, "status": f"ERROR: {e}"}
+        print()
+        print("-" * 70)
+        print(f"ERROR running {display_name}: {e}")
+        print("-" * 70)
+
+        return {
+            "file": display_name,
+            "status": f"ERROR: {e}",
+        }
 
 
 # ==========================================================
@@ -105,18 +135,37 @@ def run_scraper(scraper_filename):
 # ==========================================================
 
 def print_pipeline_settings():
-    print(f"\n{'=' * 70}")
+    print()
+    print("=" * 70)
     print("NEWS DATA PIPELINE")
     print("=" * 70)
+
     print(f"Pipeline run date: {TODAY}")
-    print(f"Collection period: {START_DATE_STR} to {END_DATE_STR}")
+    print(
+        f"Collection period: "
+        f"{START_DATE_STR} to {END_DATE_STR}"
+    )
     print("Period: Previous complete calendar month")
+
     print(f"Raw scraper folder: {NEWS_RAW_DIR}")
     print(f"Processed folder: {NEWS_PROCESSED_DIR}")
-    print("\nPipeline order:")
-    print("  1. Run 6 country news scrapers")
+
+    print()
+    print("Pipeline order:")
+    print("  1. Run 6 country news scrapers ONE BY ONE")
     print("  2. Run News_cleaned.py")
     print("  3. Run News_topic.py")
+
+    print()
+    print("News scraper order:")
+
+    for index, scraper in enumerate(
+        NEWS_SCRAPERS,
+        start=1,
+    ):
+        print(
+            f"  {index}. {scraper}"
+        )
 
 
 # ==========================================================
@@ -124,20 +173,33 @@ def print_pipeline_settings():
 # ==========================================================
 
 def print_summary(results):
-    print(f"\n{'=' * 70}")
+    print()
+    print("=" * 70)
     print("PIPELINE SUMMARY")
     print("=" * 70)
 
     for result in results:
-        print(f"{result['file']:<30} {result['status']}")
+        print(
+            f"{result['file']:<30} "
+            f"{result['status']}"
+        )
 
     successful = sum(
         result["status"] == "SUCCESS"
         for result in results
     )
 
-    print(f"\nSuccessful: {successful}/{len(results)}")
-    print(f"Collection period: {START_DATE_STR} to {END_DATE_STR}")
+    print()
+    print(
+        f"Successful: "
+        f"{successful}/{len(results)}"
+    )
+
+    print(
+        f"Collection period: "
+        f"{START_DATE_STR} to {END_DATE_STR}"
+    )
+
     print("=" * 70)
 
 
@@ -147,24 +209,67 @@ def print_summary(results):
 
 def main():
     print_pipeline_settings()
+
     results = []
 
     # ------------------------------------------------------
     # STEP 1: RAW NEWS COLLECTION
     # ------------------------------------------------------
 
-    print(f"\n\n{'#' * 70}")
+    print()
+    print()
+    print("#" * 70)
     print("STEP 1/3: RAW NEWS COLLECTION")
     print("#" * 70)
 
-    scraper_results = [
-        run_scraper(scraper)
-        for scraper in NEWS_SCRAPERS
-    ]
+    scraper_results = []
 
-    results.extend(scraper_results)
+    total_scrapers = len(NEWS_SCRAPERS)
 
-    # Individual scraper failures do not stop the pipeline.
+    # Run each scraper ONE AT A TIME.
+    #
+    # The next scraper only starts after the current
+    # scraper has completely finished.
+    for index, scraper in enumerate(
+        NEWS_SCRAPERS,
+        start=1,
+    ):
+        print()
+        print()
+        print("#" * 70)
+        print(
+            f"NEWS SCRAPER {index}/{total_scrapers}"
+        )
+        print(f"CURRENT FILE: {scraper}")
+        print("#" * 70)
+
+        result = run_scraper(scraper)
+
+        scraper_results.append(result)
+        results.append(result)
+
+        print()
+        print(
+            f"SCRAPER {index}/{total_scrapers} FINISHED: "
+            f"{scraper}"
+        )
+        print(
+            f"STATUS: {result['status']}"
+        )
+
+        # Show which scraper will run next.
+        if index < total_scrapers:
+            next_scraper = NEWS_SCRAPERS[index]
+
+            print()
+            print(
+                f"NEXT SCRAPER: {next_scraper}"
+            )
+
+    # ------------------------------------------------------
+    # SCRAPER FAILURE CHECK
+    # ------------------------------------------------------
+
     scraper_failures = [
         result
         for result in scraper_results
@@ -172,21 +277,40 @@ def main():
     ]
 
     if scraper_failures:
-        print(f"\nWARNING: {len(scraper_failures)} news scraper(s) failed.")
+        print()
+        print("=" * 70)
+        print(
+            f"WARNING: "
+            f"{len(scraper_failures)} "
+            f"news scraper(s) failed."
+        )
+        print("=" * 70)
 
         for failure in scraper_failures:
-            print(f"  - {failure['file']}: {failure['status']}")
+            print(
+                f"  - {failure['file']}: "
+                f"{failure['status']}"
+            )
 
+        print()
         print(
-            "\nNews_cleaned.py will still run using articles "
+            "News_cleaned.py will still run using articles "
             "successfully collected by the other scrapers."
         )
+
+    else:
+        print()
+        print("=" * 70)
+        print("ALL 6 NEWS SCRAPERS COMPLETED SUCCESSFULLY")
+        print("=" * 70)
 
     # ------------------------------------------------------
     # STEP 2: CLEAN AND CLASSIFY
     # ------------------------------------------------------
 
-    print(f"\n\n{'#' * 70}")
+    print()
+    print()
+    print("#" * 70)
     print("STEP 2/3: NEWS CLEANING")
     print("#" * 70)
 
@@ -199,20 +323,28 @@ def main():
 
     # Topic modelling depends on successful cleaning.
     if cleaned_result["status"] != "SUCCESS":
-        print(f"\n{'=' * 70}")
+        print()
+        print("=" * 70)
         print("PIPELINE STOPPED")
         print("=" * 70)
+
         print("News_cleaned.py failed.")
-        print("News_topic.py will not run because it depends on cleaned data.")
+        print(
+            "News_topic.py will not run because "
+            "it depends on cleaned data."
+        )
 
         print_summary(results)
+
         return
 
     # ------------------------------------------------------
     # STEP 3: TOPIC MODELLING
     # ------------------------------------------------------
 
-    print(f"\n\n{'#' * 70}")
+    print()
+    print()
+    print("#" * 70)
     print("STEP 3/3: TOPIC MODELLING")
     print("#" * 70)
 

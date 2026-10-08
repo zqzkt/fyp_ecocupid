@@ -54,7 +54,7 @@ TARGET_COUNTRIES = [
 ]
 # Set True only for the one-time historical baseline rebuild.
 # After the June-August baseline succeeds, change this to False.
-REBUILD_MODE = True
+REBUILD_MODE = False
 # Topic discovery is similarity-driven. We do NOT force a target number of topics.
 # A higher distance allows genuinely related articles to cluster more readily,
 # while unique stories are still allowed to remain as one-article topics.
