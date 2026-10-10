@@ -1,5 +1,4 @@
 import os
-import json
 import googleapiclient.discovery
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -22,17 +21,17 @@ def main():
         developerKey=developer_key
     )
     try:
-        video_ids = fetch_ids(supabase)
+        videos = fetch_ids(supabase)
 
-        for video_id in video_ids:
+        for video in videos:
             try:
                 request = youtube.commentThreads().list(
                 part="id,snippet,replies",
-                videoId=video_id['video_id']
+                videoId=video['video_id']
                 )
                 
                 comments = request.execute()
-                formatted_comments = format_records(comments)
+                formatted_comments = format_records(comments, video.get("country"))
                 if not formatted_comments:
                     print("No comments to insert.")
                 else:
@@ -48,7 +47,11 @@ def main():
     except Exception as e:
         print(f"Error encountered when retrieving IDs: {e}")
 
-def format_records(youtube_data):
+    from scripts.supabase.twitter_pipeline import run_cleaner
+
+    run_cleaner()
+
+def format_records(youtube_data, country=None):
     formatted_records = []
 
     # Parse and map the JSON
@@ -57,6 +60,7 @@ def format_records(youtube_data):
         record = {
             "comment_id": item["id"],
             "video_id": item["snippet"]["videoId"],
+            "country": country,
             "comment": item["snippet"]["topLevelComment"]["snippet"]["textOriginal"],
             "like_count": item["snippet"]["topLevelComment"]["snippet"]["likeCount"],
             "reply_count": item["snippet"]["totalReplyCount"]
@@ -82,7 +86,7 @@ def fetch_ids(supabase):
         # Query specific chunk of data
         response = (
             supabase.table("youtube_videos")
-            .select("video_id")
+            .select("video_id,country")
             .range(start_row, end_row)
             .execute()
         )

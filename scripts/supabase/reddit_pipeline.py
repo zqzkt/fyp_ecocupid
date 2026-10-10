@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(REPO_ROOT / ".env")
 
 BATCH_SIZE = 100
+TARGET_COUNTRIES = ("Singapore", "Malaysia", "Indonesia", "Philippines", "Thailand", "Brunei")
 
 POST_COLUMNS = (
     "post_id",
@@ -81,6 +82,60 @@ def _headers(key: str, *, with_bearer: bool) -> dict[str, str]:
     if with_bearer:
         headers["Authorization"] = f"Bearer {key}"
     return headers
+
+
+def topic_keyword_groups(month: str | None = None) -> dict[str, list[str]]:
+    """Read top-three monthly topic keywords grouped by target country."""
+    base_url, key = _credentials()
+    params: dict[str, str | int] = {
+        "select": "country,topic_name,topic_rank,monthly_keywords,month",
+        "country": "in.(" + ",".join(TARGET_COUNTRIES) + ")",
+        "topic_rank": "lte.3",
+        "order": "month.desc,topic_rank.asc",
+        "limit": "1000",
+    }
+    if month:
+        params["month"] = f"eq.{month}"
+
+    response = requests.get(
+        f"{base_url}/rest/v1/monthly_topic_stats",
+        params=params,
+        headers=_headers(key, with_bearer=True),
+        timeout=60,
+    )
+    if response.status_code in {401, 403} and "jwt" in response.text.lower():
+        response = requests.get(
+            f"{base_url}/rest/v1/monthly_topic_stats",
+            params=params,
+            headers=_headers(key, with_bearer=False),
+            timeout=60,
+        )
+    if not response.ok:
+        raise SystemExit(f"monthly_topic_stats lookup failed ({response.status_code}): {response.text[:1200]}")
+
+    rows = response.json()
+    if not month and rows:
+        newest_month = max(row.get("month", "") for row in rows)
+        rows = [row for row in rows if row.get("month") == newest_month]
+
+    keywords_by_country = {country: [] for country in TARGET_COUNTRIES}
+    seen_by_country = {country: set() for country in TARGET_COUNTRIES}
+    for row in rows:
+        country = row.get("country")
+        if country not in keywords_by_country:
+            continue
+        raw = row.get("monthly_keywords") or ""
+        values = raw if isinstance(raw, list) else str(raw).split(",")
+        for value in values:
+            keyword = str(value).strip()
+            if keyword and keyword.casefold() not in seen_by_country[country]:
+                seen_by_country[country].add(keyword.casefold())
+                keywords_by_country[country].append(keyword)
+
+    keywords_by_country = {country: values for country, values in keywords_by_country.items() if values}
+    if not keywords_by_country:
+        raise SystemExit("monthly_topic_stats returned no keywords for the requested month and countries.")
+    return keywords_by_country
 
 
 def project(row: dict[str, Any], columns: tuple[str, ...], required_id: str) -> dict[str, Any] | None:
@@ -158,4 +213,7 @@ def sync_reddit_data(
         "reddit_comments": upsert_batches(session, base_url, key, "reddit_comments", projected_comments, "comment_id"),
     }
     print(json.dumps(counts, indent=2))
+    from scripts.supabase.twitter_pipeline import run_cleaner
+
+    run_cleaner()
     return counts
