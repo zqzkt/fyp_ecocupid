@@ -1,9 +1,16 @@
 import os
+import sys
 import googleapiclient.discovery
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
 def main():
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
     load_dotenv()
 
     # Supabase setup

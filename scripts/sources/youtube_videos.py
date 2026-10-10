@@ -1,5 +1,6 @@
 import os
 import json
+import sys
 import youtube_comments
 import googleapiclient.discovery
 from supabase import create_client, Client
@@ -10,6 +11,12 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+# Add it to Python's system path if it's not already there
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 def get_monthly_keywords(supabase, country):
     keywords = []
@@ -64,7 +71,7 @@ def format_records(youtube_data, country, token, keyword):
     return formatted_records
 
 
-def fetch_videos(youtube, country, keywords, location, location_radius):
+def fetch_videos(youtube, country, country_code, keywords, location, location_radius):
     """
     Fetch videos from YouTube based on a country's location.
     Returns a list of formatted video records.
@@ -83,7 +90,7 @@ def fetch_videos(youtube, country, keywords, location, location_radius):
                 publishedAfter=get_previous_month_start(),
                 publishedBefore=get_current_month_start(),
                 q=keyword,
-                regionCode=country,
+                regionCode=country_code,
                 relevanceLanguage="en",
                 type="video"
             )
@@ -171,7 +178,13 @@ def main():
         developerKey=developer_key
     )
 
-    with open("locations.json", "r") as locations_file:
+    # Get the directory where the current script is located
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Build the absolute path to the JSON file
+    locations_path = os.path.join(current_dir, "locations.json")
+
+    with open(locations_path, "r") as locations_file:
         all_countries = json.load(locations_file)
 
     # Fetch videos for each country
@@ -183,6 +196,7 @@ def main():
         keywords = get_monthly_keywords(supabase, country)
         video_records = fetch_videos(
             youtube,
+            country,
             country_code,
             keywords,
             location,
@@ -246,11 +260,6 @@ def main():
 
         except Exception as e:
             print(f"Error inserting data: {e}")
-
-    from scripts.supabase.twitter_pipeline import run_cleaner
-
-    run_cleaner()
-
 
 if __name__ == "__main__":
     main()
