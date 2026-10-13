@@ -451,7 +451,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sentiment-dry-run",
         action="store_true",
-        help="Classify sentiment without changing environment_sentiment.",
+        help="Classify sentiment without changing sentiment_analysis.",
     )
     return parser.parse_args()
 
@@ -498,7 +498,6 @@ def main() -> None:
         f"Loaded {sum(len(values) for values in keyword_groups.values())} monthly topic keywords "
         f"across {len(keyword_groups)} countries from Supabase."
     )
-    all_keywords = list(dict.fromkeys(keyword for values in keyword_groups.values() for keyword in values))
     seed_posts: list[dict[str, Any]] = []
     all_users: dict[str, dict[str, Any]] = {}
     remaining_posts = args.max_posts
@@ -520,7 +519,7 @@ def main() -> None:
             args.start_time,
             args.end_time,
             SEARCH_ALL if args.archive else SEARCH_RECENT,
-            all_keywords,
+            keywords,
         )
         seed_posts.extend(country_posts)
         all_users.update(country_users)
@@ -531,18 +530,34 @@ def main() -> None:
 
     reply_rows: list[dict[str, Any]] = []
     if args.with_replies:
-        replies, reply_users = collect_replies(
-            session,
-            seed_posts,
-            args.max_reply_conversations,
-            args.max_replies_per_post,
-            collected_at,
-            args.with_users,
-            args.start_time,
-            args.end_time,
-            SEARCH_ALL if args.archive else SEARCH_RECENT,
-            keywords,
+        replies = []
+        reply_users: dict[str, dict[str, Any]] = {}
+        reply_candidates = [
+            post for post in seed_posts
+            if (post.get("reply_count") or 0) > 0 and post.get("conversation_id")
+        ]
+        reply_candidates.sort(
+            key=lambda post: (
+                post.get("reply_count") or 0,
+                post.get("total_engagement") or 0,
+            ),
+            reverse=True,
         )
+        for post in reply_candidates[:args.max_reply_conversations]:
+            post_replies, post_users = collect_replies(
+                session,
+                [post],
+                1,
+                args.max_replies_per_post,
+                collected_at,
+                args.with_users,
+                args.start_time,
+                args.end_time,
+                SEARCH_ALL if args.archive else SEARCH_RECENT,
+                post.get("matched_keywords") or [],
+            )
+            replies.extend(post_replies)
+            reply_users.update(post_users)
         all_users.update(reply_users)
         country_by_post_id = {post.get("post_id"): post.get("inferred_country") for post in seed_posts}
         for reply in replies:
