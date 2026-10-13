@@ -35,7 +35,7 @@ def get_previous_month_start():
         prev_month = 12
         year = now.year - 1
     else:
-        prev_month = now.month - 2
+        prev_month = now.month - 1
         year = now.year
         
     return f"{year:04d}-{prev_month:02d}-01T00:00:00Z"
