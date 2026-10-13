@@ -47,7 +47,7 @@ Clean posts and comments into clean_posts and clean_comments
 Translate non-English comments during cleaning
     |
     v
-Derive environment_sentiment
+Derive sentiment_analysis
 ```
 
 No permanent JSON or JSONL files are created by the current collection path.
@@ -364,7 +364,7 @@ python scripts/supabase/twitter_pipeline.py
 
 The pipeline entry point invokes the collector with `--force`, upserts raw
 records to `x_posts` and `x_replies`, runs the cleaner, and then derives
-`environment_sentiment`. The collector's configured spend cap still applies.
+`sentiment_analysis`. The collector's configured spend cap still applies.
 
 ## 12. Monthly Job
 
@@ -387,7 +387,7 @@ The job:
     which refreshes `clean_posts` and `clean_comments` from all available raw
     platform tables, translating non-English comments.
 9. It runs `scripts/sentiment/sentiment_analysis.py --all` to derive
-    `environment_sentiment` from the refreshed clean tables.
+    `sentiment_analysis` from the refreshed clean tables.
 
 The monthly run has a `$5.00` maximum estimate. With user expansions disabled, its configured maximum is 250 post/detail reads, costing `$2.50` at the current rates. This is a large bounded monthly sample, not an unlimited export: obtaining every post from a busy month would require a larger budget and may require X full-archive access.
 
@@ -396,7 +396,7 @@ The monthly run has a `$5.00` maximum estimate. With user expansions disabled, i
 The multilabel classifier is trained on the official GoEmotions train split and
 uses its dev split to tune per-label thresholds. It predicts the 27 GoEmotions
 emotions plus `neutral`; each post or comment may receive multiple non-neutral
-emotions, while `neutral` is exclusive. `environment_sentiment.dominant_emotions`
+emotions, while `neutral` is exclusive. `sentiment_analysis.dominant_emotions`
 stores up to three emotion labels ranked by count (ties are alphabetical). Run
 training and apply the count-column migrations before deriving aggregates:
 
