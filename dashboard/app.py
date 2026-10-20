@@ -50,6 +50,11 @@ country_opportunity_page = st.Page(
     title="Country Opportunity Explorer",
 )
 
+engagement_comparison_page = st.Page(
+    "views/engagement_comparison.py",
+    title="Engagement Comparison",
+)
+
 data_page = st.Page(
     "views/data.py",
     title="Data",
@@ -60,6 +65,7 @@ page = st.navigation(
     [
         overview_page,
         country_opportunity_page,
+        engagement_comparison_page,
         data_page,
     ]
 )
@@ -74,6 +80,12 @@ if page == country_opportunity_page:
     st.session_state[
         "country_opportunity_filters"
     ] = country_opportunity_filters(df)
+
+elif page == engagement_comparison_page:
+
+    # Engagement Comparison uses its own sidebar filters
+    # inside engagement_comparison.py.
+    pass
 
 else:
 
