@@ -1,12 +1,25 @@
 from apify_client import ApifyClient
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import pandas as pd
 import os
 import sys
 from pathlib import Path
-from lingua import Language, LanguageDetectorBuilder
 from dotenv import load_dotenv
+
+try:
+    from lingua import Language, LanguageDetectorBuilder
+except ImportError as error:
+    from langdetect import DetectorFactory, LangDetectException, detect_langs
+
+    DetectorFactory.seed = 0
+    Language = None
+    LanguageDetectorBuilder = None
+    print(
+        "Warning: lingua could not be loaded "
+        f"({error}). Using langdetect as the English filter fallback."
+    )
 
 # =====================================================
 # CONFIGURATION
@@ -14,10 +27,9 @@ from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(REPO_ROOT / ".env")
-APIFY_TOKEN = "apify_api_BVpQ54MVumBYBbbSW9aoTzhcI9p31L4qi8Kz"
+APIFY_TOKEN = os.getenv("APIFY_TOKEN")
 
-MAX_POSTS = 2
-MAX_COMMENTS = 2
+APIFY_BUDGET_USD = Decimal("12")
 
 # =====================================================
 # RUN APIFY ACTOR
@@ -60,37 +72,51 @@ print(f"Generated {len(start_urls)} search URLs")
 client = ApifyClient(APIFY_TOKEN)
 
 result_items = []
-
-for search_request in start_urls:
-    run_input = {
-        "startUrls": [{"url": search_request["url"]}],
-        "fastMode": False,
-        "maxPostsCount": MAX_POSTS,
-        "maxCommentsPerPost": MAX_COMMENTS,
-        "maxCommunitiesCount": 1,
-        "crawlCommentsPerPost": True,
-        "postedAfter": posted_after,
-        "postedBefore": posted_before,
-        "proxy": {
-            "useApifyProxy": True,
-            "apifyProxyGroups": ["RESIDENTIAL"]
-        }
+run_input = {
+    "startUrls": [{"url": request["url"]} for request in start_urls],
+    "fastMode": False,
+    "maxCommunitiesCount": 1,
+    "crawlCommentsPerPost": True,
+    "postedAfter": posted_after,
+    "postedBefore": posted_before,
+    "proxy": {
+        "useApifyProxy": True,
+        "apifyProxyGroups": ["RESIDENTIAL"]
     }
+}
 
-    print(
-        f"Starting actor for topic={search_request['topic']}, "
-        f"country={search_request['country']}..."
-    )
-    run = client.actor("harshmaur/reddit-scraper").call(
-        run_input=run_input
-    )
+print(f"Starting one Reddit actor run for {len(start_urls)} search URLs...")
+run = client.actor("harshmaur/reddit-scraper").call(
+    run_input=run_input,
+    max_total_charge_usd=APIFY_BUDGET_USD,
+)
 
-    for item in client.dataset(run.default_dataset_id).iterate_items():
-        result_items.append((
-            item,
-            search_request["topic"],
-            search_request["country"],
-        ))
+# Refresh the completed run so usage_total_usd reflects the final Apify charge.
+run = client.run(run.id).get() or run
+spent_usd = Decimal(str(run.usage_total_usd or 0))
+print(
+    f"Reddit Apify usage: ${spent_usd:.2f} / "
+    f"${APIFY_BUDGET_USD:.2f}"
+)
+
+search_requests_by_url = {
+    request["url"]: request
+    for request in start_urls
+}
+for item in client.dataset(run.default_dataset_id).iterate_items():
+    source_url = (
+        item.get("searchUrl")
+        or item.get("sourceUrl")
+        or item.get("startUrl")
+    )
+    search_request = search_requests_by_url.get(source_url)
+    if search_request is None:
+        search_request = {"topic": None, "country": None}
+    result_items.append((
+        item,
+        search_request["topic"],
+        search_request["country"],
+    ))
 
 print("Actor completed")
 
@@ -199,18 +225,32 @@ comments_df.drop_duplicates(
 # KEEP ENGLISH POSTS (AND THEIR COMMENTS)
 # =====================================================
 
-language_detector = (
-    LanguageDetectorBuilder
-    .from_all_languages()
-    .with_minimum_relative_distance(0.25)
-    .build()
-)
+if LanguageDetectorBuilder is not None:
+    language_detector = (
+        LanguageDetectorBuilder
+        .from_all_languages()
+        .with_minimum_relative_distance(0.25)
+        .build()
+    )
+else:
+    language_detector = None
 
 def is_english(text):
     text = str(text or "").strip()
     if len(text) < 10:
         return False
-    return language_detector.detect_language_of(text) == Language.ENGLISH
+    if language_detector is not None:
+        return language_detector.detect_language_of(text) == Language.ENGLISH
+
+    try:
+        detected = detect_langs(text)
+    except LangDetectException:
+        return False
+    return bool(
+        detected
+        and detected[0].lang == "en"
+        and detected[0].prob >= 0.75
+    )
 
 def english_posts_only(df):
     """Keep only posts whose title + body is detected as English."""
@@ -224,49 +264,6 @@ posts_df = english_posts_only(posts_df)
 # Comments under non-English posts are dropped.
 valid_post_ids = set(posts_df["post_id"].dropna())
 comments_df = comments_df[comments_df["post_id"].isin(valid_post_ids)].copy()
-
-# =====================================================
-# SAVE CSV FILES
-# =====================================================
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-posts_file = os.path.join(SCRIPT_DIR, "reddit_posts.csv")
-comments_file = os.path.join(SCRIPT_DIR, "reddit_comments.csv")
-
-def append_unique_rows(new_df, csv_file, duplicate_column):
-    if os.path.exists(csv_file):
-        existing_df = pd.read_csv(csv_file)
-
-        # Only posts are language-filtered; comments are kept as-is.
-        if duplicate_column == "post_id":
-            existing_df = english_posts_only(existing_df)
-
-        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-    else:
-        combined_df = new_df
-
-    combined_df.drop_duplicates(
-        subset=[duplicate_column],
-        keep="last",
-        inplace=True
-    )
-    combined_df.to_csv(csv_file, index=False, encoding="utf-8-sig")
-    return combined_df
-
-posts_df = append_unique_rows(posts_df, posts_file, "post_id")
-comments_df = append_unique_rows(comments_df, comments_file, "comment_id")
-
-# Keep the CSV and Supabase datasets referentially consistent after merging
-# previously collected rows.
-valid_post_ids = set(posts_df["post_id"].dropna())
-comments_df = comments_df[
-    comments_df["post_id"].isin(valid_post_ids)
-].copy()
-comments_df.to_csv(
-    comments_file,
-    index=False,
-    encoding="utf-8-sig"
-)
 
 # =====================================================
 # SYNC TO SUPABASE
@@ -316,5 +313,3 @@ _sync_supabase(posts_df.to_dict('records'), comments_df.to_dict('records'))
 print("\n===== SCRAPING COMPLETE =====")
 print(f"Total Posts collected: {len(posts_df)}")
 print(f"Total Comments collected: {len(comments_df)}")
-print(f"Saved: {posts_file}")
-print(f"Saved: {comments_file}")

@@ -60,6 +60,11 @@ data_page = st.Page(
     title="Data",
 )
 
+communication_channels_page = st.Page(
+    "views/communication_channels.py",
+    title="Communication Channels",
+)
+
 
 page = st.navigation(
     [
@@ -67,6 +72,7 @@ page = st.navigation(
         country_opportunity_page,
         engagement_comparison_page,
         data_page,
+        communication_channels_page,
     ]
 )
 
@@ -87,11 +93,16 @@ elif page == engagement_comparison_page:
     # inside engagement_comparison.py.
     pass
 
-else:
+elif page != communication_channels_page:
 
     st.session_state["filters"] = (
         sidebar_filters(df)
     )
 
+else:
 
+    st.session_state["filters"] = (
+        sidebar_filters(df)
+    )
+    
 page.run()

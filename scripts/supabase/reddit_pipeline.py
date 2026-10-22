@@ -166,6 +166,16 @@ def upsert_batches(
         print(f"{table}: 0 rows")
         return 0
 
+    unique_rows: dict[Any, dict[str, Any]] = {}
+    for row in rows:
+        conflict_value = row.get(on_conflict)
+        if conflict_value is not None:
+            unique_rows[conflict_value] = row
+    rows = list(unique_rows.values())
+    if not rows:
+        print(f"{table}: 0 rows")
+        return 0
+
     endpoint = f"{base_url}/rest/v1/{table}?on_conflict={on_conflict}"
     written = 0
     use_bearer = True
