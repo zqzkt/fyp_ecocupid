@@ -1,4 +1,5 @@
 import os
+import html
 import json
 import re
 import sys
@@ -43,8 +44,8 @@ COMMENTS_ACTOR = "apify/facebook-comments-scraper"
 # SCRAPING CONFIGURATION
 # =========================================================
 
-POST_LIMIT_PER_PAGE = 25
-COMMENT_LIMIT_PER_POST = 10
+POST_LIMIT_PER_PAGE = 100
+COMMENT_LIMIT_PER_POST = 20
 
 
 def previous_calendar_month():
@@ -64,28 +65,21 @@ def previous_calendar_month():
 MONTH_START, CURRENT_MONTH_START = previous_calendar_month()
 POST_DATE_RANGE = MONTH_START.date().isoformat()
 
-# Maximum number of selected posts from the same topic.
-MAX_POSTS_PER_TOPIC_FOR_COMMENTS = 4
-
-# Maximum total number of posts whose comments we scrape.
-MAX_TOTAL_POSTS_FOR_COMMENTS = 25
-
 
 # =========================================================
 # APIFY COST SAFETY
 # =========================================================
 
-POST_RUN_MAX_COST_USD = 2.00
-COMMENT_RUN_MAX_COST_USD = 1.00
+# Total Apify budget for one pipeline run. Post scraping spends it
+# first; the comment run is capped at whatever is left.
+TOTAL_MAX_COST_USD = 20.00
 
 
 # =========================================================
 # TEST MODE
 # =========================================================
 
-# A small, paid Apify run of the keyword-filtered regional pages
-# only. While on, the script:
-#   - scrapes fresh posts (ignores the post cache),
+# A small, paid Apify run of selected pages only. While on, the script:
 #   - scrapes only the sources below, with their own post limits,
 #   - keeps all scraped posts instead of only the previous month,
 #   - skips comment scraping and the Supabase upload,
@@ -100,16 +94,8 @@ TEST_SOURCE_POST_LIMITS = {
 
 
 # =========================================================
-# CACHE + UPLOAD SETTINGS
+# OFFLINE + UPLOAD SETTINGS
 # =========================================================
-
-# Keep these True while improving classification so that
-# no additional Apify charges are incurred.
-USE_CACHED_POSTS = True
-USE_CACHED_COMMENTS = True
-
-if TEST_MODE:
-    USE_CACHED_POSTS = False
 
 # Set FACEBOOK_OFFLINE_TEST=1 to run only against existing local caches.
 # This mode refuses fresh Apify requests and skips Supabase uploads.
@@ -138,8 +124,10 @@ REJECTED_POSTS_FILE = (
     DATA_DIR / "facebook_posts_rejected.json"
 )
 
-NON_ENGLISH_POSTS_FILE = (
-    DATA_DIR / "facebook_posts_non_english.json"
+# Cloud Translation results keyed by postId, so re-runs against
+# cached posts do not pay to translate the same text again.
+POST_TRANSLATIONS_CACHE_FILE = (
+    DATA_DIR / "facebook_post_translations.json"
 )
 
 TOPIC_KEYWORDS_CACHE_FILE = (
@@ -165,8 +153,8 @@ COMMENTS_CSV = CSV_DIR / "facebook_comments.csv"
 # =========================================================
 
 # Regional pages cover more than one country. A source with
-# "filter_keywords" keeps only posts that mention one of these
-# terms (see split_posts_by_source_keywords).
+# "country_keywords" assigns each post to the first country whose
+# terms it mentions (see split_posts_by_source_keywords).
 #
 # Terms shared with other countries are deliberately excluded:
 # "borneo" (Malaysia, Brunei), "sunda" and "wallacea" (regional),
@@ -208,6 +196,35 @@ THAILAND_KEYWORDS = [
     "isan",
 ]
 
+# "sulu" is excluded because the Sulu Sea is shared with Malaysia.
+PHILIPPINES_KEYWORDS = [
+    "philippines",
+    "philippine",
+    "filipino",
+    "filipinos",
+    "manila",
+    "quezon city",
+    "luzon",
+    "visayas",
+    "mindanao",
+    "mindoro",
+    "palawan",
+    "cebu",
+    "davao",
+    "bohol",
+    "iloilo",
+    "negros",
+    "leyte",
+    "samar",
+    "boracay",
+]
+
+# Facebook sources chosen for EcoCupid: a Singapore-based environmental
+# media platform that tells stories about grassroots eco-projects across
+# Southeast Asia. Pages that surface community projects, volunteer drives
+# and regional environmental news are preferred over pure announcement
+# pages.
+
 FACEBOOK_SOURCES = [
     # Singapore
     {
@@ -222,8 +239,8 @@ FACEBOOK_SOURCES = [
     },
     {
         "country": "Singapore",
-        "source_name": "Eco-Business",
-        "url": "https://www.facebook.com/ecobusinesscom",
+        "source_name": "Green Nudge",
+        "url": "https://www.facebook.com/greennudgesg",
     },
 
     # Malaysia
@@ -242,16 +259,26 @@ FACEBOOK_SOURCES = [
         "source_name": "Malaysian Nature Society",
         "url": "https://www.facebook.com/MalaysianNatureSociety.Official",
     },
+    {
+        "country": "Malaysia",
+        "source_name": "Reef Check Malaysia",
+        "url": "https://www.facebook.com/reefcheckmalaysia",
+    },
+
 
     # Indonesia
-    # WALHI, WWF Indonesia and Mongabay Indonesia were removed because
-    # they post mainly in Indonesian. The global Mongabay page posts in
-    # English but covers every region, so keep Indonesian stories only.
+    # Mongabay Indonesia posts mainly in Indonesian; its posts are
+    # translated to English before topic classification. Mongabay and
+    # Greenpeace Southeast Asia are under "Regional" below.
     {
         "country": "Indonesia",
-        "source_name": "Mongabay",
-        "url": "https://www.facebook.com/mongabay",
-        "filter_keywords": INDONESIA_KEYWORDS,
+        "source_name": "Mongabay Indonesia",
+        "url": "https://www.facebook.com/MongabayIndonesia",
+    },
+    {
+        "country": "Indonesia",
+        "source_name": "Trash Hero Indonesia",
+        "url": "https://www.facebook.com/trashheroindonesia",
     },
 
     # Philippines
@@ -275,35 +302,91 @@ FACEBOOK_SOURCES = [
         "source_name": "Greenpeace Philippines",
         "url": "https://www.facebook.com/greenpeaceph",
     },
+    {
+        "country": "Philippines",
+        "source_name": "Oceana Philippines",
+        "url": "https://www.facebook.com/oceana.ph",
+    },
 
     # Thailand
     # Greenpeace Thailand, WWF Thailand and EnLAW were removed because
-    # they post mainly in Thai. Greenpeace Southeast Asia posts in
-    # English across the region, so keep Thai stories only.
+    # they post mainly in Thai. Trash Hero Thailand and Bangkok Tribune
+    # are Thailand-based and post in English. Greenpeace Southeast Asia,
+    # Mongabay and Eco-Business are under "Regional" below.
     {
         "country": "Thailand",
-        "source_name": "Greenpeace Southeast Asia",
-        "url": "https://www.facebook.com/GreenpeaceSEA",
-        "filter_keywords": THAILAND_KEYWORDS,
+        "source_name": "Trash Hero Thailand",
+        "url": "https://www.facebook.com/trashherothailand",
+    },
+    {
+        "country": "Thailand",
+        "source_name": "Bangkok Tribune",
+        "url": "https://www.facebook.com/BangkokTribune",
     },
 
     # Brunei
     {
         "country": "Brunei",
-        "source_name": "Brunei Nature Society",
-        "url": "https://www.facebook.com/BruneiNatureSociety",
+        "source_name": "Ecobin Brunei",
+        "url": "https://www.facebook.com/ecobin.bn",
     },
     {
         "country": "Brunei",
         "source_name": "Green Brunei",
         "url": "https://www.facebook.com/GreenBrunei",
     },
+
+    # Regional
+    # These pages post in English across Southeast Asia. Each page is
+    # listed once so it is scraped once; its posts are assigned to a
+    # country by "country_keywords". Posts that match no country go to
+    # the source's "country" if it has one, otherwise they are dropped.
     {
-        "country": "Brunei",
-        "source_name": "Beach Bunch",
-        "url": "https://www.facebook.com/beachbunch",
+        "source_name": "Mongabay",
+        "url": "https://www.facebook.com/mongabay",
+        "country_keywords": {
+            "Indonesia": INDONESIA_KEYWORDS,
+            "Thailand": THAILAND_KEYWORDS,
+            "Philippines": PHILIPPINES_KEYWORDS,
+        },
+    },
+    {
+        "source_name": "Greenpeace Southeast Asia",
+        "url": "https://www.facebook.com/GreenpeaceSEA",
+        "country_keywords": {
+            "Indonesia": INDONESIA_KEYWORDS,
+            "Thailand": THAILAND_KEYWORDS,
+            "Philippines": PHILIPPINES_KEYWORDS,
+        },
+    },
+    {
+        # Singapore-based, so posts about other countries stay Singapore
+        # unless they name Thailand.
+        "country": "Singapore",
+        "source_name": "Eco-Business",
+        "url": "https://www.facebook.com/EcoBusinessMedia",
+        "country_keywords": {
+            "Thailand": THAILAND_KEYWORDS,
+        },
     },
 ]
+
+# Posts are matched back to their source by page URL, so a page listed
+# twice would silently take only the last entry's settings.
+_duplicate_urls = [
+    url
+    for url, count in Counter(
+        str(source["url"]).rstrip("/").lower()
+        for source in FACEBOOK_SOURCES
+    ).items()
+    if count > 1
+]
+
+if _duplicate_urls:
+    raise SystemExit(
+        "FACEBOOK_SOURCES lists these pages more than once; use one "
+        f"entry with country_keywords instead: {_duplicate_urls}"
+    )
 
 # Sources actually scraped in this run. A source may carry an
 # optional "post_limit" that overrides POST_LIMIT_PER_PAGE.
@@ -338,6 +421,17 @@ def canonicalise_url(url):
         return ""
 
     return str(url).rstrip("/").lower()
+
+
+def source_countries(source):
+    """Return every country a source's posts can be assigned to."""
+
+    countries = list(source.get("country_keywords", {}))
+
+    if source.get("country"):
+        countries.append(source["country"])
+
+    return countries
 
 
 def safe_int(value):
@@ -516,7 +610,7 @@ def build_classification_text(post):
 # PER-SOURCE KEYWORD FILTER
 # =========================================================
 
-# Fields checked for a source's filter_keywords: the caption, the
+# Fields checked for a source's country_keywords: the caption, the
 # shared link's title, and the shared link URL (article slugs such
 # as "indonesia-deforestation-surges" often name the country).
 SOURCE_FILTER_FIELDS = (
@@ -588,20 +682,24 @@ def print_raw_source_urls(url_counts, limit=10):
 
 def split_posts_by_source_keywords(posts, sources):
     """
-    Split posts into (kept, dropped) using each source's filter_keywords.
+    Assign regional posts to a country and drop unmatched ones.
 
-    Sources without "filter_keywords" keep all posts. Error records
-    (no postId) are kept so source errors are still reported. Posts
-    that cannot be matched to a configured source are kept, but a
-    warning is printed because the filter could not be applied.
+    For a source with "country_keywords", each post gets the first
+    country whose keywords it mentions, else the source's own
+    "country", else it is dropped. Returns (kept, dropped). Other
+    sources keep all posts. Error records (no postId) are kept so
+    source errors are still reported. Posts that cannot be matched
+    to a configured source are kept, but a warning is printed
+    because the filter could not be applied.
     """
 
     patterns = {
-        source["source_name"]: compile_source_keyword_pattern(
-            source["filter_keywords"]
-        )
+        source["source_name"]: [
+            (country, compile_source_keyword_pattern(keywords))
+            for country, keywords in source["country_keywords"].items()
+        ]
         for source in sources
-        if source.get("filter_keywords")
+        if source.get("country_keywords")
     }
 
     if not patterns:
@@ -614,7 +712,7 @@ def split_posts_by_source_keywords(posts, sources):
 
     kept_posts = []
     dropped_posts = []
-    kept_counts = Counter()
+    kept_counts = defaultdict(Counter)
     dropped_counts = Counter()
     seen_urls = Counter()
     unmatched_urls = Counter()
@@ -638,13 +736,28 @@ def split_posts_by_source_keywords(posts, sources):
             continue
 
         source_name = source["source_name"]
-        pattern = patterns.get(source_name)
+        country_patterns = patterns.get(source_name)
 
-        if pattern is None:
+        if country_patterns is None:
             kept_posts.append(post)
-        elif pattern.search(build_source_filter_text(post)):
+            continue
+
+        filter_text = build_source_filter_text(post)
+
+        country = next(
+            (
+                country
+                for country, pattern in country_patterns
+                if pattern.search(filter_text)
+            ),
+            source.get("country"),
+        )
+
+        if country:
+            post = dict(post)
+            post["country"] = country
             kept_posts.append(post)
-            kept_counts[source_name] += 1
+            kept_counts[source_name][country] += 1
         else:
             dropped_posts.append(post)
             dropped_counts[source_name] += 1
@@ -652,8 +765,13 @@ def split_posts_by_source_keywords(posts, sources):
     print("\nPer-source keyword filter:")
 
     for source_name in patterns:
+        kept_by_country = ", ".join(
+            f"{country} {count}"
+            for country, count in kept_counts[source_name].items()
+        )
+
         print(
-            f"{source_name}: kept {kept_counts[source_name]}, "
+            f"{source_name}: kept {kept_by_country or 0}, "
             f"dropped {dropped_counts[source_name]}"
         )
 
@@ -666,8 +784,27 @@ def split_posts_by_source_keywords(posts, sources):
         )
         print_raw_source_urls(unmatched_urls)
 
+    source_errors = {
+        post.get("source_name"): post
+        for post in posts
+        if not post.get("postId") and post.get("error")
+    }
+
     for source_name in patterns:
-        if kept_counts[source_name] + dropped_counts[source_name] == 0:
+        if not kept_counts[source_name] and not dropped_counts[source_name]:
+            error = source_errors.get(source_name)
+
+            # A scraper error explains the missing posts; the URL list
+            # is only useful when the posts exist but did not match.
+            if error:
+                print(
+                    f"\n!!! WARNING: keyword-filtered source "
+                    f"{source_name!r} has 0 posts because Apify "
+                    f"returned {error.get('error')!r}: "
+                    f"{error.get('errorDescription')}"
+                )
+                continue
+
             print(
                 f"\n!!! WARNING: keyword-filtered source "
                 f"{source_name!r} has 0 recognised posts. Check that "
@@ -692,7 +829,7 @@ def print_keyword_filter_samples(
     """Print sample kept/dropped posts for each keyword-filtered source."""
 
     for source in sources:
-        if not source.get("filter_keywords"):
+        if not source.get("country_keywords"):
             continue
 
         source_name = source["source_name"]
@@ -716,7 +853,11 @@ def print_keyword_filter_samples(
             for post in samples:
                 text = " ".join(str(post.get("text") or "").split())
 
-                print(f"* {text[:150] or '(no text)'}")
+                country = (
+                    f"[{post.get('country')}] " if label == "KEPT" else ""
+                )
+
+                print(f"* {country}{text[:150] or '(no text)'}")
                 print(f"  link: {post.get('link') or '(none)'}")
 
 
@@ -725,14 +866,13 @@ def print_source_run_summary(
     scraped_posts,
     dropped_posts,
     rejected_posts,
-    english_posts,
-    non_english_posts
+    environmental_posts
 ):
     """
-    Print scraped / keyword-filter / language counts per source.
+    Print scraped / keyword-filter / topic / translation counts per source.
 
-    Language detection runs on environmental posts only, so
-    "No topic" posts are not counted as English or non-English.
+    "Transl." counts topic-matched posts whose text was translated
+    to English before classification.
     """
 
     def count_by_source(posts):
@@ -745,8 +885,12 @@ def print_source_run_summary(
     scraped = count_by_source(scraped_posts)
     dropped = count_by_source(dropped_posts)
     rejected = count_by_source(rejected_posts)
-    english = count_by_source(english_posts)
-    non_english = count_by_source(non_english_posts)
+    environmental = count_by_source(environmental_posts)
+    translated = count_by_source(
+        post
+        for post in environmental_posts
+        if post.get("original_text")
+    )
 
     source_names = [source["source_name"] for source in sources]
     source_names += sorted(set(scraped) - set(source_names))
@@ -756,7 +900,7 @@ def print_source_run_summary(
     print("==============================")
     print(
         f"{'Source':32} {'Scraped':>7} {'KW kept':>7} "
-        f"{'KW drop':>7} {'No topic':>8} {'English':>7} {'Non-EN':>7}"
+        f"{'KW drop':>7} {'No topic':>8} {'Topic':>7} {'Transl.':>7}"
     )
 
     for source_name in source_names:
@@ -766,8 +910,8 @@ def print_source_run_summary(
             f"{scraped[source_name] - dropped[source_name]:>7} "
             f"{dropped[source_name]:>7} "
             f"{rejected[source_name]:>8} "
-            f"{english[source_name]:>7} "
-            f"{non_english[source_name]:>7}"
+            f"{environmental[source_name]:>7} "
+            f"{translated[source_name]:>7}"
         )
 
 
@@ -788,19 +932,101 @@ def is_english(text):
     return language_detector.detect_language_of(text) == Language.ENGLISH
 
 
-def split_english_posts(posts):
-    """Return (english_posts, non_english_posts) based on post text only."""
+def apply_post_translation(post, translated_text, language):
+    """Store the translation on the post, keeping the original text."""
 
-    english_posts = []
-    non_english_posts = []
+    post["lang"] = language
+
+    if str(language).lower() != "en":
+        post["original_text"] = post.get("text")
+        post["text"] = translated_text
+
+
+def translate_non_english_posts(posts):
+    """
+    Translate non-English post text to English before classification.
+
+    Uses the same Cloud Translation batching as clean_social.py, so
+    the English monthly topic keywords can match translated posts.
+    Translated posts keep their source text in original_text and the
+    detected language in lang. In offline test mode only cached
+    translations are used.
+    """
+
+    if POST_TRANSLATIONS_CACHE_FILE.exists():
+        cache = load_json(POST_TRANSLATIONS_CACHE_FILE)
+    else:
+        cache = {}
+
+    translated_posts = []
+    pending_posts = []
 
     for post in posts:
-        if is_english(post.get("text")):
-            english_posts.append(post)
-        else:
-            non_english_posts.append(post)
+        post = dict(post)
+        translated_posts.append(post)
 
-    return english_posts, non_english_posts
+        text = str(post.get("text") or "").strip()
+
+        if not post.get("postId") or not text:
+            continue
+
+        if is_english(text):
+            post["lang"] = "en"
+            continue
+
+        cached = cache.get(str(post["postId"]))
+
+        if cached and cached.get("original_text") == post["text"]:
+            apply_post_translation(
+                post,
+                cached["text"],
+                cached["lang"]
+            )
+        else:
+            pending_posts.append(post)
+
+    if pending_posts and OFFLINE_TEST_MODE:
+        print(
+            f"\nOffline test mode: {len(pending_posts)} non-English "
+            "post(s) have no cached translation and stay untranslated."
+        )
+    elif pending_posts:
+        from scripts.cleaning.clean_social import translate_comments_batch
+
+        print(
+            f"\nTranslating {len(pending_posts)} non-English "
+            "post(s) with Cloud Translation..."
+        )
+
+        results = translate_comments_batch(
+            [{"text": post["text"]} for post in pending_posts]
+        )
+
+        for post, (translated_text, language) in zip(
+            pending_posts,
+            results
+        ):
+            # Cloud Translation returns HTML-escaped text.
+            translated_text = html.unescape(translated_text)
+
+            # "und" means the batch failed and the original was kept,
+            # so leave it out of the cache to retry on the next run.
+            if language != "und":
+                cache[str(post["postId"])] = {
+                    "original_text": post["text"],
+                    "text": translated_text,
+                    "lang": language,
+                }
+
+            apply_post_translation(
+                post,
+                translated_text,
+                language
+            )
+
+        save_json(cache, POST_TRANSLATIONS_CACHE_FILE)
+
+    return translated_posts
 
 
 def save_json(data, filepath):
@@ -849,6 +1075,23 @@ def require_apify_client():
     return client
 
 
+def run_cost_usd(run, run_max_cost_usd):
+    """Return a finished run's cost, assuming the full cap if unknown."""
+
+    cost = getattr(run, "usage_total_usd", None)
+
+    if cost is None:
+        print(
+            "Apify did not report this run's cost; counting "
+            f"its full ${run_max_cost_usd:.2f} cap against the budget."
+        )
+        return run_max_cost_usd
+
+    print(f"Apify run cost: ${cost:.2f}")
+
+    return cost
+
+
 # =========================================================
 # POST SCRAPING
 # =========================================================
@@ -857,12 +1100,16 @@ def fetch_facebook_posts(
     sources,
     limit=POST_LIMIT_PER_PAGE
 ):
+    """
+    Scrape posts and return (posts, Apify cost in USD).
+
+    resultsLimit applies to every page in a run, so sources with a
+    different "post_limit" are scraped in separate runs. Each run is
+    capped at the budget the earlier runs left over.
+    """
 
     apify_client = require_apify_client()
 
-    # resultsLimit applies to every page in a run, so sources with a
-    # different "post_limit" are scraped in separate runs. The cost cap
-    # is split across those runs so the total never exceeds it.
     sources_by_limit = defaultdict(list)
 
     for source in sources:
@@ -871,14 +1118,10 @@ def fetch_facebook_posts(
         ].append(source)
 
     if not sources_by_limit:
-        return []
-
-    run_max_cost_usd = (
-        POST_RUN_MAX_COST_USD
-        / len(sources_by_limit)
-    )
+        return [], 0.0
 
     items = []
+    spent_usd = 0.0
 
     for post_limit, limit_sources in sources_by_limit.items():
         page_urls = [
@@ -900,6 +1143,15 @@ def fetch_facebook_posts(
             f"up to {post_limit} post(s) each..."
         )
 
+        run_max_cost_usd = TOTAL_MAX_COST_USD - spent_usd
+
+        if run_max_cost_usd <= 0:
+            print(
+                "Apify budget used up; skipping "
+                f"{len(page_urls)} page(s)."
+            )
+            continue
+
         run = apify_client.actor(
             POSTS_ACTOR
         ).call(
@@ -915,6 +1167,8 @@ def fetch_facebook_posts(
                 "to start."
             )
             continue
+
+        spent_usd += run_cost_usd(run, run_max_cost_usd)
 
         dataset_id = run.default_dataset_id
 
@@ -964,7 +1218,9 @@ def fetch_facebook_posts(
                 break
 
         if source_info:
-            post["country"] = source_info["country"]
+            # Regional sources without a "country" are assigned one by
+            # split_posts_by_source_keywords.
+            post["country"] = source_info.get("country") or "Unknown"
             post["source_name"] = source_info["source_name"]
         else:
             post["country"] = post.get("country") or "Unknown"
@@ -977,7 +1233,7 @@ def fetch_facebook_posts(
 
     # The actor accepts a lower boundary only. Enforce both boundaries
     # locally so the output contains exactly the previous calendar month.
-    return keep_reporting_month(enriched_posts)
+    return keep_reporting_month(enriched_posts), spent_usd
 
 
 # =========================================================
@@ -1036,7 +1292,11 @@ def print_monthly_topic_keywords(topic_keywords, sources):
     print(f"MONTHLY TOPIC KEYWORDS ({MONTH_START.date().isoformat()})")
     print("==============================")
 
-    for country in sorted({source["country"] for source in sources}):
+    for country in sorted({
+        country
+        for source in sources
+        for country in source_countries(source)
+    }):
         topics = topic_keywords.get(country)
 
         if not topics:
@@ -1227,30 +1487,15 @@ def print_source_errors(posts):
 
 
 # =========================================================
-# SELECT DIVERSE POSTS FOR COMMENTS
+# SELECT POSTS FOR COMMENTS
 # =========================================================
 
-def select_diverse_posts_for_comments(
-    posts,
-    max_per_topic=(
-        MAX_POSTS_PER_TOPIC_FOR_COMMENTS
-    ),
-    max_total=(
-        MAX_TOTAL_POSTS_FOR_COMMENTS
-    ),
-):
+def select_posts_for_comments(posts):
     """
-    Select a country- and topic-diverse set of posts for comments.
+    Select every post worth scraping comments for.
 
-    The raw topic distribution is never altered. This function only
-    determines where the paid comment-scraping budget is spent.
-
-    Selection goals:
-      1. Exclude posts with zero reported comments.
-      2. Rotate across countries so Malaysia/Thailand are not crowded
-         out by countries with more high-engagement posts.
-      3. Limit the number of selected posts from one topic.
-      4. Within those constraints, prefer engagement.
+    Excludes posts with zero reported comments or no known country,
+    and orders the rest by engagement.
     """
 
     candidates = [
@@ -1261,99 +1506,15 @@ def select_diverse_posts_for_comments(
         and post.get("country") != "Unknown"
     ]
 
-    if not candidates:
-        return []
-
-    grouped_by_country = defaultdict(list)
-
-    for post in candidates:
-        grouped_by_country[
-            post["country"]
-        ].append(post)
-
-    # Highest engagement first within each country.
-    for country in grouped_by_country:
-        grouped_by_country[country].sort(
-            key=lambda post: (
-                safe_int(post.get("comments")),
-                safe_int(post.get("likes")),
-                safe_int(post.get("shares")),
-            ),
-            reverse=True
-        )
-
-    candidate_topic_counts = Counter(
-        post["primary_topic"]
-        for post in candidates
+    return sorted(
+        candidates,
+        key=lambda post: (
+            safe_int(post.get("comments")),
+            safe_int(post.get("likes")),
+            safe_int(post.get("shares")),
+        ),
+        reverse=True
     )
-
-    # Countries with fewer available candidates go first so they
-    # are less likely to be excluded by the overall max_total cap.
-    country_order = sorted(
-        grouped_by_country,
-        key=lambda country: (
-            len(grouped_by_country[country]),
-            country,
-        )
-    )
-
-    selected = []
-    selected_post_ids = set()
-    selected_topic_counts = Counter()
-
-    while len(selected) < max_total:
-        progress_made = False
-
-        for country in country_order:
-            if len(selected) >= max_total:
-                break
-
-            available = [
-                post
-                for post in grouped_by_country[country]
-                if str(post.get("postId"))
-                not in selected_post_ids
-                and selected_topic_counts[
-                    post["primary_topic"]
-                ] < max_per_topic
-            ]
-
-            if not available:
-                continue
-
-            # Prefer topics not yet represented. If still tied,
-            # favour rarer topics, then higher engagement.
-            available.sort(
-                key=lambda post: (
-                    selected_topic_counts[
-                        post["primary_topic"]
-                    ],
-                    candidate_topic_counts[
-                        post["primary_topic"]
-                    ],
-                    -safe_int(post.get("comments")),
-                    -safe_int(post.get("likes")),
-                    -safe_int(post.get("shares")),
-                )
-            )
-
-            chosen = available[0]
-            chosen_id = str(
-                chosen.get("postId")
-            )
-
-            selected.append(chosen)
-            selected_post_ids.add(chosen_id)
-            selected_topic_counts[
-                chosen["primary_topic"]
-            ] += 1
-
-            progress_made = True
-
-        if not progress_made:
-            break
-
-    return selected
 
 
 # =========================================================
@@ -1411,6 +1572,7 @@ def refresh_comment_metadata(comments, posts):
 
 def fetch_facebook_comments(
     posts,
+    max_cost_usd,
     limit=COMMENT_LIMIT_PER_POST
 ):
 
@@ -1427,6 +1589,13 @@ def fetch_facebook_comments(
         )
         return []
 
+    if max_cost_usd <= 0:
+        print(
+            "\nApify budget used up by post scraping; "
+            "skipping comment scraping."
+        )
+        return []
+
     apify_client = require_apify_client()
 
     run_input = {
@@ -1437,7 +1606,8 @@ def fetch_facebook_comments(
 
     print(
         f"\nStarting comment scraper "
-        f"for {len(post_urls)} post(s)..."
+        f"for {len(post_urls)} post(s), "
+        f"capped at ${max_cost_usd:.2f}..."
     )
 
     run = apify_client.actor(
@@ -1445,7 +1615,7 @@ def fetch_facebook_comments(
     ).call(
         run_input=run_input,
         max_total_charge_usd=(
-            COMMENT_RUN_MAX_COST_USD
+            max_cost_usd
         ),
     )
 
@@ -1455,6 +1625,8 @@ def fetch_facebook_comments(
             "to start."
         )
         return []
+
+    run_cost_usd(run, max_cost_usd)
 
     dataset_id = run.default_dataset_id
 
@@ -1493,7 +1665,7 @@ def print_cached_comment_coverage(
     comments,
     selected_posts
 ):
-    """Explain whether the old cached comments match the new selection."""
+    """Explain whether the cached comments match the current selection."""
 
     cached_urls = {
         canonicalise_url(
@@ -1522,12 +1694,7 @@ def print_cached_comment_coverage(
     if overlap < len(selected_urls):
         print(
             "This is expected after changing the classifier/selection. "
-            "No new Apify comment scrape was run because "
-            "USE_CACHED_COMMENTS=True."
-        )
-        print(
-            "When you are ready to collect comments for the new balanced "
-            "selection, set USE_CACHED_COMMENTS=False."
+            "Offline test mode does not run a new Apify comment scrape."
         )
 
 
@@ -1545,6 +1712,8 @@ def normalise_facebook_post(post):
         "published_at": post.get("time"),
         "url": post.get("url"),
         "text": post.get("text"),
+        "original_text": post.get("original_text"),
+        "lang": post.get("lang"),
         "likes": safe_int(post.get("likes")),
         "comments_count": safe_int(
             post.get("comments")
@@ -1693,23 +1862,21 @@ if __name__ == "__main__":
             f"{POSTS_CACHE_FILE}"
         )
 
-    if (
-        (USE_CACHED_POSTS or OFFLINE_TEST_MODE)
-        and POSTS_CACHE_FILE.exists()
-    ):
+    if OFFLINE_TEST_MODE:
         print("\nUsing cached Facebook posts...")
         posts = load_json(POSTS_CACHE_FILE)
+        post_cost_usd = 0.0
     else:
-        posts = fetch_facebook_posts(
+        posts, post_cost_usd = fetch_facebook_posts(
             SCRAPE_SOURCES
         )
         save_json(posts, POSTS_CACHE_FILE)
 
     scraped_posts = posts
 
-    # Regional pages (e.g. Mongabay) must mention their assigned
-    # country. The raw cache stays unfiltered so keyword lists can be
-    # tuned offline without another Apify run.
+    # Regional pages (e.g. Mongabay) are assigned a country by keyword.
+    # The raw cache stays unfiltered so keyword lists can be tuned
+    # offline without another Apify run.
     (
         posts,
         keyword_dropped_posts,
@@ -1728,6 +1895,10 @@ if __name__ == "__main__":
     # Apply the exact month boundary to both fresh and cached records.
     posts = keep_reporting_month(posts)
 
+    # Translate before classification so the English monthly topic
+    # keywords also match non-English posts.
+    posts = translate_non_english_posts(posts)
+
     usable_posts = [
         post
         for post in posts
@@ -1742,7 +1913,7 @@ if __name__ == "__main__":
 
     print(
         f"\nRaw scraper records: "
-        f"{len(posts)}"
+        f"{len(scraped_posts)}"
     )
     print(
         f"Usable Facebook posts: "
@@ -1801,32 +1972,20 @@ if __name__ == "__main__":
         REJECTED_POSTS_FILE
     )
 
-    # Posts are not translated downstream (clean_social.py only
-    # translates comments), so keep English posts only. This runs
-    # before comment selection so no Apify budget is spent on
-    # comments for posts that would be dropped.
-    (
-        environmental_posts,
-        non_english_posts,
-    ) = split_english_posts(environmental_posts)
+    translated_posts = [
+        post
+        for post in environmental_posts
+        if post.get("original_text")
+    ]
 
     print(
-        f"\nEnglish environmental posts kept: "
-        f"{len(environmental_posts)}"
-    )
-    print(
-        f"Non-English environmental posts dropped: "
-        f"{len(non_english_posts)}"
+        f"\nTranslated environmental posts: "
+        f"{len(translated_posts)}"
     )
 
     print_country_distribution(
-        non_english_posts,
-        "NON-ENGLISH POSTS DROPPED BY COUNTRY"
-    )
-
-    save_json(
-        non_english_posts,
-        NON_ENGLISH_POSTS_FILE
+        translated_posts,
+        "TRANSLATED POSTS BY COUNTRY"
     )
 
     print_source_run_summary(
@@ -1834,8 +1993,7 @@ if __name__ == "__main__":
         scraped_posts,
         keyword_dropped_posts,
         rejected_posts,
-        environmental_posts,
-        non_english_posts
+        environmental_posts
     )
 
     # =====================================================
@@ -1852,13 +2010,11 @@ if __name__ == "__main__":
     )
 
     # =====================================================
-    # STEP 4: SELECT BALANCED POSTS FOR COMMENTS
+    # STEP 4: SELECT POSTS FOR COMMENTS
     # =====================================================
 
-    selected_posts = (
-        select_diverse_posts_for_comments(
-            environmental_posts
-        )
+    selected_posts = select_posts_for_comments(
+        environmental_posts
     )
 
     print("\n==============================")
@@ -1891,10 +2047,7 @@ if __name__ == "__main__":
                 f"{COMMENTS_CACHE_FILE}"
             )
 
-        if (
-            (USE_CACHED_COMMENTS or OFFLINE_TEST_MODE)
-            and COMMENTS_CACHE_FILE.exists()
-        ):
+        if OFFLINE_TEST_MODE:
             print(
                 "\nUsing cached Facebook comments..."
             )
@@ -1916,7 +2069,8 @@ if __name__ == "__main__":
             )
         else:
             comments = fetch_facebook_comments(
-                selected_posts
+                selected_posts,
+                TOTAL_MAX_COST_USD - post_cost_usd
             )
 
             save_json(
@@ -2024,14 +2178,14 @@ if __name__ == "__main__":
 
     print(
         "Raw scraper records:",
-        len(posts)
+        len(scraped_posts)
     )
     print(
         "Usable posts:",
         len(usable_posts)
     )
     print(
-        "English environmental posts:",
+        "Environmental posts:",
         len(environmental_posts)
     )
     print(
@@ -2039,8 +2193,8 @@ if __name__ == "__main__":
         len(rejected_posts)
     )
     print(
-        "Non-English posts dropped:",
-        len(non_english_posts)
+        "Translated environmental posts:",
+        len(translated_posts)
     )
     print(
         "Posts selected for comments:",
