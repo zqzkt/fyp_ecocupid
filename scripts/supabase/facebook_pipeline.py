@@ -31,6 +31,8 @@ POST_COLUMNS = (
     "published_at",
     "url",
     "text",
+    "original_text",
+    "lang",
     "likes",
     "comments_count",
     "shares",
