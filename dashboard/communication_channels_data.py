@@ -181,10 +181,11 @@ def topic_options(data: dict[str, pd.DataFrame]) -> pd.DataFrame:
 def recommend_channels(
     data: dict[str, pd.DataFrame],
     country: str,
-    topic: str,
+    topic: str | list[str],
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Rank platforms using activity volume and engagement."""
-    terms = {topic.casefold()}
+    """Rank platforms using activity volume and engagement for one or more keywords."""
+    topics = [topic] if isinstance(topic, str) else topic
+    terms = {term.casefold() for term in topics}
     activity_frames = []
     for source_type in ("posts", "comments"):
         frame = add_date_columns(data[source_type], source_type)

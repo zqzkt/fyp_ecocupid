@@ -65,6 +65,11 @@ communication_channels_page = st.Page(
     title="Communication Channels",
 )
 
+communication_insights_page = st.Page(
+    "views/communication_insights.py",
+    title="Communication Insights",
+)
+
 
 page = st.navigation(
     [
@@ -73,6 +78,7 @@ page = st.navigation(
         engagement_comparison_page,
         data_page,
         communication_channels_page,
+        communication_insights_page,
     ]
 )
 
@@ -91,6 +97,12 @@ elif page == engagement_comparison_page:
 
     # Engagement Comparison uses its own sidebar filters
     # inside engagement_comparison.py.
+    pass
+
+elif page == communication_insights_page:
+
+    # Communication Insights uses its own single-country filters
+    # inside communication_insights.py.
     pass
 
 elif page != communication_channels_page:
