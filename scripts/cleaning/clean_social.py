@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import os
 import time
@@ -21,6 +22,8 @@ demojize = import_module("emoji").demojize
 BATCH_SIZE = 100
 PAGE_SIZE = 1000
 TRANSLATION_BATCH_SIZE = 50
+# Cloud Translation rejects requests over 204,800 bytes; stay well under it.
+TRANSLATION_MAX_BATCH_BYTES = 100_000
 TRANSLATION_RETRIES = 3
 MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,50}", re.UNICODE)
 WHITESPACE_RE = re.compile(r"\s+")
@@ -89,6 +92,58 @@ def clean_text(text: str | None) -> str:
     return WHITESPACE_RE.sub(" ", text).strip()
 
 
+class ApiKeyTranslator:
+    """Cloud Translation v2 over REST with an API key.
+
+    Mirrors translate_v2.Client.translate(), which only accepts
+    service-account or gcloud credentials.
+    """
+
+    URL = "https://translation.googleapis.com/language/translate/v2"
+
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self.session = requests.Session()
+
+    def translate(
+        self,
+        values: str | list[str],
+        target_language: str,
+        source_language: str | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        single = isinstance(values, str)
+        payload: dict[str, Any] = {
+            "q": [values] if single else list(values),
+            "target": target_language,
+        }
+        if source_language:
+            payload["source"] = source_language
+        response = self.session.post(
+            self.URL, params={"key": self.api_key}, json=payload, timeout=60
+        )
+        if response.status_code == 400:
+            from google.api_core.exceptions import BadRequest
+
+            raise BadRequest(response.text[:500])
+        response.raise_for_status()
+        translations = response.json()["data"]["translations"]
+        return translations[0] if single else translations
+
+
+def get_translator():
+    """Use GOOGLE_TRANSLATE_API_KEY when set, else Google default credentials."""
+    global _translator
+    if _translator is None:
+        api_key = os.environ.get("GOOGLE_TRANSLATE_API_KEY", "").strip()
+        if api_key:
+            _translator = ApiKeyTranslator(api_key)
+        else:
+            from google.cloud import translate_v2
+
+            _translator = translate_v2.Client()
+    return _translator
+
+
 def translate_to_english(
     text: str,
     source_language: str | None = None,
@@ -99,11 +154,7 @@ def translate_to_english(
         # ISO 639-2 uses zxx for text with no linguistic content. Preserve
         # emoji-only and other non-linguistic comments without calling Translate.
         return text, "zxx"
-    global _translator
-    if _translator is None:
-        from google.cloud import translate_v2
-
-        _translator = translate_v2.Client()
+    translator = get_translator()
     options: dict[str, str] = {"target_language": "en"}
     if source_language and normalized_language not in {
         "en",
@@ -116,14 +167,14 @@ def translate_to_english(
     from google.api_core.exceptions import BadRequest
 
     try:
-        result = _translator.translate(text, **options)
+        result = translator.translate(text, **options)
     except BadRequest:
         # X-specific codes such as qme are not Google language codes. Retry
         # with source-language detection if an explicit code was rejected.
         if "source_language" in options:
             options.pop("source_language")
             try:
-                result = _translator.translate(text, **options)
+                result = translator.translate(text, **options)
             except BadRequest:
                 print(
                     f"Skipping translation for unsupported language code "
@@ -160,18 +211,16 @@ def translate_comments_batch(comments: list[dict[str, Any]]) -> list[tuple[str, 
     if not eligible:
         return results
 
-    global _translator
-    if _translator is None:
-        from google.cloud import translate_v2
+    from google.api_core.exceptions import BadRequest
 
-        _translator = translate_v2.Client()
+    translator = get_translator()
+    batches = translation_batches(eligible)
 
-    for start in range(0, len(eligible), TRANSLATION_BATCH_SIZE):
-        batch = eligible[start : start + TRANSLATION_BATCH_SIZE]
+    for batch_number, batch in enumerate(batches, start=1):
         texts = [text for _, text, _ in batch]
         for attempt in range(TRANSLATION_RETRIES):
             try:
-                translated = _translator.translate(texts, target_language="en")
+                translated = translator.translate(texts, target_language="en")
                 if isinstance(translated, dict):
                     translated = [translated]
                 for (row_index, original, source_language), item in zip(batch, translated):
@@ -179,6 +228,17 @@ def translate_comments_batch(comments: list[dict[str, Any]]) -> list[tuple[str, 
                         str(item.get("translatedText") or original),
                         str(item.get("detectedSourceLanguage") or source_language or "und"),
                     )
+                break
+            except BadRequest as exc:
+                # A rejected request fails the same way every time, so
+                # retrying cannot help.
+                print(
+                    f"Translation batch rejected ({exc}); preserving originals "
+                    f"for {len(batch)} comments.",
+                    flush=True,
+                )
+                for row_index, original, language in batch:
+                    results[row_index] = (original, language or "und")
                 break
             except Exception as exc:
                 if attempt + 1 < TRANSLATION_RETRIES:
@@ -198,9 +258,32 @@ def translate_comments_batch(comments: list[dict[str, Any]]) -> list[tuple[str, 
                     for row_index, original, language in batch:
                         results[row_index] = (original, language or "und")
         # Keep well below Google's documented per-second request quota.
-        if start + TRANSLATION_BATCH_SIZE < len(eligible):
+        if batch_number < len(batches):
             time.sleep(0.25)
     return results
+
+
+def translation_batches(
+    eligible: list[tuple[int, str, str | None]],
+) -> list[list[tuple[int, str, str | None]]]:
+    """Group texts by count and encoded size so each request stays under Google's limit."""
+    batches: list[list[tuple[int, str, str | None]]] = []
+    batch: list[tuple[int, str, str | None]] = []
+    batch_bytes = 0
+    for item in eligible:
+        # JSON-escaped length: non-ASCII text grows to \uXXXX in the request body.
+        item_bytes = len(json.dumps(item[1]))
+        if batch and (
+            len(batch) >= TRANSLATION_BATCH_SIZE
+            or batch_bytes + item_bytes > TRANSLATION_MAX_BATCH_BYTES
+        ):
+            batches.append(batch)
+            batch, batch_bytes = [], 0
+        batch.append(item)
+        batch_bytes += item_bytes
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 def first(row: dict[str, Any], *keys: str) -> Any:

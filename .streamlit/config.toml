@@ -1,0 +1,22 @@
+# Place this file at <repo root>/.streamlit/config.toml
+# (the folder you run `streamlit run dashboard/app.py` from).
+#
+# EcoCupid brand theme, taken from the CSS variables on ecocupid-asean.com:
+#   light: background hsl(46 50% 90%) = #f2ecd9, primary hsl(117 98% 19%) = #066001,
+#          accent hsl(46 50% 95%) = #f9f6ec, text black.
+#   dark:  the site's own dark tokens (--th-base #0D1117, --th-surface #161B22,
+#          --th-text-primary #F0EDE6, --th-ecocupid-accent #3A8A2E).
+# The background and text colours must match SURFACE_COLOR / TEXT_COLOR in
+# dashboard/style.py, and the light primaryColor must match SERIES_COLOR["light"].
+
+[theme.light]
+primaryColor = "#066001"
+backgroundColor = "#f2ecd9"
+secondaryBackgroundColor = "#f9f6ec"
+textColor = "#000000"
+
+[theme.dark]
+primaryColor = "#3a8a2e"
+backgroundColor = "#0d1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#f0ede6"
