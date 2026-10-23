@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import os
@@ -12,6 +13,7 @@ from typing import Any, Iterable
 
 import requests
 from dotenv import load_dotenv
+from lingua import Language, LanguageDetectorBuilder
 
 REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
 load_dotenv(REPO_ROOT / ".env")
@@ -26,14 +28,16 @@ TRANSLATION_RETRIES = 3
 MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,50}", re.UNICODE)
 WHITESPACE_RE = re.compile(r"\s+")
 _translator = None
+_language_detector = None
 X_LANGUAGE_CODES_WITHOUT_TRANSLATABLE_SOURCE = {"qam", "qct", "qht", "qme", "qst"}
-VULGARITY_RE = re.compile(
-    r"\b(?:motherfuck(?:er|ing|ed)?|fuck(?:er|ing|ed|s)?|shit(?:ty|ting|ted|s)?|"
-    r"asshole(?:s)?|bitch(?:es|y)?|bastard(?:s)?|cunt(?:s)?|dick(?:head|s)?|"
-    r"pussy(?:cat|s)?|damn(?:ed|it)?|crap(?:py)?|ass)\b",
-    re.IGNORECASE,
-)
-
+COUNTRY_ALIASES = {
+    "sg": "Singapore",
+    "my": "Malaysia",
+    "id": "Indonesia",
+    "ph": "Philippines",
+    "th": "Thailand",
+    "bn": "Brunei",
+}
 # Keep high-signal fields for analysis, filtering, grouping, and auditability.
 CLEAN_COLUMNS = (
     "source_id",
@@ -85,7 +89,6 @@ def replace_emoji(text: str) -> str:
 def clean_text(text: str | None) -> str:
     text = replace_emoji(text or "")
     text = MENTION_RE.sub("", text)
-    text = VULGARITY_RE.sub(lambda match: match.group(0)[0] + "*" * (len(match.group(0)) - 1), text)
     return WHITESPACE_RE.sub(" ", text).strip()
 
 
@@ -318,8 +321,33 @@ def inferred_country(row: dict[str, Any]) -> Any:
             "unspecified",
             "n/a",
         }:
-            return value
+            country = str(value).strip()
+            return COUNTRY_ALIASES.get(country.casefold(), country)
     return None
+
+
+def is_english_youtube_post(row: dict[str, Any]) -> bool:
+    """Keep YouTube posts only when their language is known to be English."""
+    language = str(first(row, "lang", "language") or "").strip().casefold()
+    if language:
+        return language == "english" or language == "en" or language.startswith("en-")
+
+    text = " ".join(
+        str(row.get(key) or "").strip()
+        for key in ("title", "description")
+    ).strip()
+    if len(text) < 10:
+        return False
+
+    global _language_detector
+    if _language_detector is None:
+        _language_detector = (
+            LanguageDetectorBuilder
+            .from_all_languages()
+            .with_minimum_relative_distance(0.25)
+            .build()
+        )
+    return _language_detector.detect_language_of(text) == Language.ENGLISH
 
 
 def source_id(row: dict[str, Any], platform: str, source_type: str) -> str | None:
@@ -439,13 +467,36 @@ def normalize_row(
                 original_text = translated_text
         elif normalized_language != "en":
             original_text, lang = translate_to_english(original_text, str(lang))
-    likes = int(first(row, "like_count", "likeCount", "score", "ups") or 0)
-    replies = int(first(row, "reply_count", "comments_count", "total_reply_count", "num_comments") or 0)
-    reposts = int(first(row, "repost_count", "retweet_count") or 0)
-    quotes = int(first(row, "quote_count") or 0)
+    likes_value = first(
+        row,
+        "like_count",
+        "likeCount",
+        "likes",
+        "comment_like_count",
+        "score",
+        "ups",
+    )
+    replies_value = first(
+        row,
+        "reply_count",
+        "comments_count",
+        "commentsCount",
+        "comment_count",
+        "commentCount",
+        "total_reply_count",
+        "num_comments",
+    )
+    reposts_value = first(row, "repost_count", "retweet_count", "shares")
+    quotes_value = first(row, "quote_count")
+    likes = int(likes_value) if likes_value is not None else None
+    replies = int(replies_value) if replies_value is not None else None
+    reposts = int(reposts_value) if reposts_value is not None else None
+    quotes = int(quotes_value) if quotes_value is not None else None
     total = first(row, "total_engagement")
     if total is None:
-        total = likes + replies + reposts + quotes
+        available_counts = (likes, replies, reposts, quotes)
+        if any(value is not None for value in available_counts):
+            total = sum(value or 0 for value in available_counts)
     normalized = {
         "source_id": identifier,
         "platform": platform,
@@ -458,7 +509,7 @@ def normalize_row(
         "conversation_id": first(row, "conversation_id", "video_id", "media_id", "link_id", "post_id", "parent_post_id"),
         "parent_source_id": first(row, "parent_tweet_id", "parent_id", "parent_post_id"),
         "posted_at": posted_at(row, source_type, platform),
-        "matched_keywords": matched_topics(row),
+        "matched_keywords": matched_topics(row) or None,
         "like_count": likes,
         "reply_count": replies,
         "repost_count": reposts,
@@ -505,7 +556,11 @@ def upsert(session: requests.Session, base_url: str, key: str, table: str, rows:
             headers=headers(key, write=True),
             timeout=60,
         )
-        response.raise_for_status()
+        if not response.ok:
+            raise SystemExit(
+                f"{table} upsert failed ({response.status_code}): "
+                f"{response.text[:1200]}"
+            )
     return len(rows)
 
 
@@ -530,9 +585,64 @@ def delete_source_ids(
     return len(unique_ids)
 
 
+def clear_cleaned_tables(
+    session: requests.Session,
+    base_url: str,
+    key: str,
+) -> dict[str, int]:
+    """Delete existing cleaned rows before an explicit full refresh."""
+    deleted: dict[str, int] = {}
+    for table in ("clean_posts", "clean_comments"):
+        source_ids: list[str] = []
+        offset = 0
+        while True:
+            response = session.get(
+                f"{base_url}/rest/v1/{table}",
+                params={
+                    "select": "source_id",
+                    "limit": PAGE_SIZE,
+                    "offset": offset,
+                },
+                headers=headers(key),
+                timeout=60,
+            )
+            response.raise_for_status()
+            page = response.json()
+            source_ids.extend(
+                str(row["source_id"])
+                for row in page
+                if row.get("source_id") is not None
+            )
+            if len(page) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+        deleted[table] = delete_source_ids(
+            session,
+            base_url,
+            key,
+            table,
+            source_ids,
+        )
+        print(f"{table}: cleared {deleted[table]} existing rows", flush=True)
+    return deleted
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Normalize social-media rows into shared Supabase tables."
+    )
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="Delete all existing clean_posts and clean_comments rows before rebuilding them.",
+    )
+    args = parser.parse_args()
+
     base_url, key = credentials()
     session = requests.Session()
+    if args.full_refresh:
+        clear_cleaned_tables(session, base_url, key)
+
     platform_tables = (
         ("x", "x_posts", "x_replies"),
         ("reddit", "reddit_posts", "reddit_comments"),
@@ -570,7 +680,9 @@ def main() -> None:
         cleaned_posts = []
         excluded_posts = []
         for item in posts:
-            if inferred_country(item) is None:
+            if inferred_country(item) is None or (
+                platform == "youtube" and not is_english_youtube_post(item)
+            ):
                 identifier = source_id(item, platform, "post")
                 if identifier:
                     excluded_posts.append(identifier)
