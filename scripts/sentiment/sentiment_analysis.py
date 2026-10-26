@@ -193,10 +193,10 @@ def row_entries(rows: list[dict[str, Any]]) -> list[tuple[str, str, str, int | N
 
 def upsert_sentiment(base_url: str, key: str, rows: list[dict[str, Any]]) -> int:
     if not rows:
-        print("environment_sentiment: 0 rows")
+        print("sentiment_analysis: 0 rows")
         return 0
     session = requests.Session()
-    endpoint = f"{base_url}/rest/v1/environment_sentiment?on_conflict=country,topic,month,year"
+    endpoint = f"{base_url}/rest/v1/sentiment_analysis?on_conflict=country,topic,month,year"
     written = 0
     batch_size = 100
     for start in range(0, len(rows), batch_size):
@@ -204,11 +204,11 @@ def upsert_sentiment(base_url: str, key: str, rows: list[dict[str, Any]]) -> int
         response = session.post(endpoint, json=chunk, headers=headers(key, write=True), timeout=60)
         response.raise_for_status()
         written += len(chunk)
-        print(f"environment_sentiment: upserted {written}/{len(rows)}")
+        print(f"sentiment_analysis: upserted {written}/{len(rows)}")
     return written
 
 
-def clear_environment_sentiment(
+def clear_sentiment_analysis(
     base_url: str,
     key: str,
     *,
@@ -224,7 +224,7 @@ def clear_environment_sentiment(
             raise ValueError("year and month are required when clearing one month")
         params.update({"year": f"eq.{year}", "month": f"eq.{month}"})
     response = session.delete(
-        f"{base_url}/rest/v1/environment_sentiment",
+        f"{base_url}/rest/v1/sentiment_analysis",
         params=params,
         headers=headers(key, write=True),
         timeout=60,
@@ -252,7 +252,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Classify and summarize rows without changing environment_sentiment.",
+        help="Classify and summarize rows without changing sentiment_analysis.",
     )
     return parser.parse_args()
 
@@ -342,7 +342,7 @@ def main() -> None:
     if args.dry_run:
         print(
             f"Dry run complete: {len(entries)} text/topic rows across {len(stats)} "
-            "country/topic/month groups; environment_sentiment was not changed."
+            "country/topic/month groups; sentiment_analysis was not changed."
         )
         return
 
@@ -375,9 +375,9 @@ def main() -> None:
     # aggregates belonging to other input sources. Matching aggregate keys
     # are refreshed by the upsert below; unrelated keys are preserved.
     if args.all and not (args.platform or args.source_type):
-        clear_environment_sentiment(base_url, key, all_rows=True)
+        clear_sentiment_analysis(base_url, key, all_rows=True)
     elif not args.all:
-        clear_environment_sentiment(
+        clear_sentiment_analysis(
             base_url,
             key,
             year=int(start_time[:4]),

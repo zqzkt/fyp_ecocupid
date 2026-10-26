@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 import os
 import re
 import sys
@@ -6,9 +7,25 @@ from pathlib import Path
 
 import pandas as pd
 from apify_client import ApifyClient
-from lingua import Language, LanguageDetectorBuilder
+from dotenv import load_dotenv
 
-APIFY_TOKEN = "apify_api_uk96vRreCQ05EaWGOAPhYDqauRAlgo13Vl4r"
+try:
+    from lingua import Language, LanguageDetectorBuilder
+except ImportError as error:
+    from langdetect import DetectorFactory, LangDetectException, detect_langs
+
+    DetectorFactory.seed = 0
+    Language = None
+    LanguageDetectorBuilder = None
+    print(
+        "Warning: lingua could not be loaded "
+        f"({error}). Using langdetect as the English filter fallback."
+    )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(REPO_ROOT / ".env")
+APIFY_TOKEN = os.getenv("APIFY_TOKEN")
+APIFY_BUDGET_USD = Decimal("12")
 
 ACTOR_ID = "khadinakbar/instagram-hashtag-scraper"
 
@@ -76,22 +93,6 @@ def previous_calendar_month() -> tuple[pd.Timestamp, pd.Timestamp]:
 MONTH_START, CURRENT_MONTH_START = previous_calendar_month()
 
 # =====================================================
-# CSV FILES
-# =====================================================
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-POSTS_CSV = os.path.join(
-    SCRIPT_DIR,
-    "instagram_posts.csv"
-)
-
-COMMENTS_CSV = os.path.join(
-    SCRIPT_DIR,
-    "instagram_comments.csv"
-)
-
-# =====================================================
 # RUN APIFY ACTOR
 # =====================================================
 
@@ -116,24 +117,44 @@ print(f"Collecting posts from {MONTH_START.date()} through {(CURRENT_MONTH_START
 print(f"Loaded {len(keyword_specs)} top-three monthly keyword specifications.")
 
 items = []
+specs_by_hashtag = {}
+hashtags = []
 for spec in keyword_specs:
     hashtag = hashtag_for(spec["keyword"], spec["country"])
-    print(f"Starting Apify Actor for #{hashtag} ({spec['topic']}, {spec['country']})...")
-    run = client.actor(ACTOR_ID).call(
-        run_input={
-            "hashtags": [hashtag],
-            "datePosted": "last-month",
-            "maxPostsPerHashtag": 2,
-            "minimumLikes": 10,
-            "includeComments": True,
-            "outputMode": "full",
-        }
-    )
-    for item in client.dataset(run.default_dataset_id).list_items().items:
-        item["topic"] = spec["topic"]
-        item["country"] = spec["country"]
-        item["hashtag"] = hashtag
-        items.append(item)
+    hashtag_key = hashtag.casefold()
+    if hashtag_key not in specs_by_hashtag:
+        hashtags.append(hashtag)
+        specs_by_hashtag[hashtag_key] = spec
+
+print(f"Starting Apify Actor for {len(hashtags)} hashtags...")
+run = client.actor(ACTOR_ID).call(
+    run_input={
+        "hashtags": hashtags,
+        "datePosted": "last-month",
+        "includeComments": True,
+        "outputMode": "full",
+    },
+    max_total_charge_usd=APIFY_BUDGET_USD,
+)
+
+# The completed run is the authoritative source for this scrape's Apify cost.
+run = client.run(run.id).get() or run
+spent_usd = Decimal(str(run.usage_total_usd or 0))
+print(
+    f"Instagram Apify usage: ${spent_usd:.2f} / "
+    f"${APIFY_BUDGET_USD:.2f}"
+)
+
+for item in client.dataset(run.default_dataset_id).list_items().items:
+    item_hashtag = item.get("hashtag") or item.get("inputHashtag")
+    hashtag_key = str(item_hashtag or "").lstrip("#").casefold()
+    spec = specs_by_hashtag.get(hashtag_key)
+    if spec is None:
+        continue
+    item["topic"] = spec["topic"]
+    item["country"] = spec["country"]
+    item["hashtag"] = item_hashtag
+    items.append(item)
 
 print("\nScraping completed.")
 print("Retrieving datasets completed.")
@@ -204,28 +225,33 @@ elif "post_url" in posts_df.columns:
 # KEEP ENGLISH CONTENT
 # =====================================================
 
-language_detector = (
-    LanguageDetectorBuilder
-    .from_all_languages()
-    .with_minimum_relative_distance(0.25)
-    .build()
-)
+if LanguageDetectorBuilder is not None:
+    language_detector = (
+        LanguageDetectorBuilder
+        .from_all_languages()
+        .with_minimum_relative_distance(0.25)
+        .build()
+    )
+else:
+    language_detector = None
 
 
 def is_english(text):
     text = str(text or "").strip()
-    if len(text) < 10:
+    if not text:
         return False
-    return language_detector.detect_language_of(text) == Language.ENGLISH
+    if language_detector is not None:
+        return language_detector.detect_language_of(text) == Language.ENGLISH
 
-def append_unique_rows(new_df, csv_file, duplicate_column):
-    if os.path.exists(csv_file):
-        existing_df = pd.read_csv(csv_file)
-        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-    else:
-        combined_df = new_df
-
-    return combined_df.drop_duplicates(subset=[duplicate_column], keep="last")
+    try:
+        detected = detect_langs(text)
+    except LangDetectException:
+        return False
+    return bool(
+        detected
+        and detected[0].lang == "en"
+        and detected[0].prob >= 0.75
+    )
 
 posts_df = posts_df[
     posts_df["caption"].apply(is_english)
@@ -239,18 +265,6 @@ items = [
     if item.get("post_id") in valid_post_ids
 ]
 
-
-posts_df.to_csv(
-    POSTS_CSV,
-    index=False,
-    encoding="utf-8-sig"
-)
-
-
-print(
-    f"\nSaved {len(posts_df)} posts "
-    f"to {POSTS_CSV}"
-)
 
 # =====================================================
 # EXTRACT COMMENTS
@@ -362,15 +376,6 @@ comments_df = comments_df[
     comments_df["post_id"].isin(valid_post_ids)
 ].copy()
 
-posts_df = append_unique_rows(posts_df, POSTS_CSV, "post_id")
-comments_df = append_unique_rows(comments_df, COMMENTS_CSV, "comment_id")
-
-# Keep comments consistent with the merged posts
-comments_df = comments_df[comments_df["post_id"].isin(set(posts_df["post_id"].dropna()))].copy()
-
-posts_df.to_csv(POSTS_CSV, index=False, encoding="utf-8-sig")
-comments_df.to_csv(COMMENTS_CSV, index=False, encoding="utf-8-sig")
-
 if comments_df.empty:
     print("\nNo sampled comments were returned by the Actor.")
 
@@ -450,5 +455,3 @@ print("SCRAPING COMPLETE")
 print("======================================")
 print(f"Total Posts collected: {len(posts_df)}")
 print(f"Total Comments collected: {len(comments_df)}")
-print(f"Saved: {POSTS_CSV}")
-print(f"Saved: {COMMENTS_CSV}")

@@ -350,7 +350,7 @@ def run_sentiment(*, platform: str | None = None, dry_run: bool = False) -> None
     except subprocess.CalledProcessError as error:
         raise SystemExit(
             f"Sentiment derivation failed with exit code {error.returncode}; "
-            "raw and clean rows remain stored, but environment_sentiment may be stale."
+            "raw and clean rows remain stored, but sentiment_analysis may be stale."
         ) from error
 
 

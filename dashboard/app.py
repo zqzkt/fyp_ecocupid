@@ -50,9 +50,24 @@ country_opportunity_page = st.Page(
     title="Country Opportunity Explorer",
 )
 
+engagement_comparison_page = st.Page(
+    "views/engagement_comparison.py",
+    title="Engagement Comparison",
+)
+
 data_page = st.Page(
     "views/data.py",
     title="Data",
+)
+
+communication_channels_page = st.Page(
+    "views/communication_channels.py",
+    title="Communication Channels",
+)
+
+communication_insights_page = st.Page(
+    "views/communication_insights.py",
+    title="Communication Insights",
 )
 
 
@@ -60,7 +75,10 @@ page = st.navigation(
     [
         overview_page,
         country_opportunity_page,
+        engagement_comparison_page,
         data_page,
+        communication_channels_page,
+        communication_insights_page,
     ]
 )
 
@@ -75,11 +93,28 @@ if page == country_opportunity_page:
         "country_opportunity_filters"
     ] = country_opportunity_filters(df)
 
-else:
+elif page == engagement_comparison_page:
+
+    # Engagement Comparison uses its own sidebar filters
+    # inside engagement_comparison.py.
+    pass
+
+elif page == communication_insights_page:
+
+    # Communication Insights uses its own single-country filters
+    # inside communication_insights.py.
+    pass
+
+elif page != communication_channels_page:
 
     st.session_state["filters"] = (
         sidebar_filters(df)
     )
 
+else:
 
+    st.session_state["filters"] = (
+        sidebar_filters(df)
+    )
+    
 page.run()

@@ -1,10 +1,22 @@
 import os
 import json
+import sys
 import youtube_comments
 import googleapiclient.discovery
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+# Add it to Python's system path if it's not already there
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 def get_monthly_keywords(supabase, country):
     keywords = []
@@ -27,6 +39,10 @@ def get_previous_month_start():
         year = now.year
         
     return f"{year:04d}-{prev_month:02d}-01T00:00:00Z"
+
+def get_current_month_start():
+    now = datetime.now()
+    return f"{now.year:04d}-{now.month:02d}-01T00:00:00Z"
 
 def format_records(youtube_data, country, token, keyword):
     formatted_records = []
@@ -55,7 +71,7 @@ def format_records(youtube_data, country, token, keyword):
     return formatted_records
 
 
-def fetch_videos(youtube, country, keywords, location, location_radius):
+def fetch_videos(youtube, country, country_code, keywords, location, location_radius):
     """
     Fetch videos from YouTube based on a country's location.
     Returns a list of formatted video records.
@@ -72,8 +88,9 @@ def fetch_videos(youtube, country, keywords, location, location_radius):
                 pageToken=next_page_token,
                 maxResults=50,
                 publishedAfter=get_previous_month_start(),
+                publishedBefore=get_current_month_start(),
                 q=keyword,
-                regionCode=country,
+                regionCode=country_code,
                 relevanceLanguage="en",
                 type="video"
             )
@@ -141,8 +158,31 @@ def fetch_video_stats(youtube, video_ids):
 
     return stats
 
+def format_comments(youtube_data, country=None):
+    formatted_records = []
+
+    # Parse and map the JSON
+    for item in youtube_data.get("items", []):
+
+        record = {
+            "comment_id": item["id"],
+            "video_id": item["snippet"]["videoId"],
+            "country": country,
+            "comment": item["snippet"]["topLevelComment"]["snippet"]["textOriginal"],
+            "like_count": item["snippet"]["topLevelComment"]["snippet"]["likeCount"],
+            "reply_count": item["snippet"]["totalReplyCount"]
+        }
+
+        formatted_records.append(record)
+
+    if not formatted_records:
+        print("No comments found to insert.")
+        return
+
+    return formatted_records
     
 def main():
+    
     load_dotenv()
 
     # Supabase setup
@@ -160,7 +200,13 @@ def main():
         developerKey=developer_key
     )
 
-    with open("locations.json", "r") as locations_file:
+    # Get the directory where the current script is located
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Build the absolute path to the JSON file
+    locations_path = os.path.join(current_dir, "locations.json")
+
+    with open(locations_path, "r") as locations_file:
         all_countries = json.load(locations_file)
 
     # Fetch videos for each country
@@ -172,6 +218,7 @@ def main():
         keywords = get_monthly_keywords(supabase, country)
         video_records = fetch_videos(
             youtube,
+            country,
             country_code,
             keywords,
             location,
@@ -236,11 +283,29 @@ def main():
         except Exception as e:
             print(f"Error inserting data: {e}")
 
+        for video in video_records:
+            try:
+                request = youtube.commentThreads().list(
+                part="id,snippet,replies",
+                videoId=video['video_id']
+                )
+                
+                comments = request.execute()
+                formatted_comments = format_comments(comments, video.get("country"))
+                if not formatted_comments:
+                    print("No comments to insert.")
+                else:
+                    try:
+                        # Insert comments
+                        response = supabase.table("youtube_comments").upsert(formatted_comments, on_conflict="comment_id").execute()
+                        print(f"Successfully uploaded {len(response.data)} comments.")
+                    except Exception as e:
+                        print(f"Error occurred when inserting into comments table: {e}")
+            except Exception as e:
+                print(f"Comments disabled for video: {e}")
+
     from scripts.supabase.twitter_pipeline import run_cleaner
-
     run_cleaner()
-
 
 if __name__ == "__main__":
     main()
-    youtube_comments.main()

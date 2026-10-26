@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
 import os
 import time
@@ -11,6 +13,7 @@ from typing import Any, Iterable
 
 import requests
 from dotenv import load_dotenv
+from lingua import Language, LanguageDetectorBuilder
 
 REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
 load_dotenv(REPO_ROOT / ".env")
@@ -19,18 +22,22 @@ demojize = import_module("emoji").demojize
 BATCH_SIZE = 100
 PAGE_SIZE = 1000
 TRANSLATION_BATCH_SIZE = 50
+# Cloud Translation rejects requests over 204,800 bytes; stay well under it.
+TRANSLATION_MAX_BATCH_BYTES = 100_000
 TRANSLATION_RETRIES = 3
 MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,50}", re.UNICODE)
 WHITESPACE_RE = re.compile(r"\s+")
 _translator = None
+_language_detector = None
 X_LANGUAGE_CODES_WITHOUT_TRANSLATABLE_SOURCE = {"qam", "qct", "qht", "qme", "qst"}
-VULGARITY_RE = re.compile(
-    r"\b(?:motherfuck(?:er|ing|ed)?|fuck(?:er|ing|ed|s)?|shit(?:ty|ting|ted|s)?|"
-    r"asshole(?:s)?|bitch(?:es|y)?|bastard(?:s)?|cunt(?:s)?|dick(?:head|s)?|"
-    r"pussy(?:cat|s)?|damn(?:ed|it)?|crap(?:py)?|ass)\b",
-    re.IGNORECASE,
-)
-
+COUNTRY_ALIASES = {
+    "sg": "Singapore",
+    "my": "Malaysia",
+    "id": "Indonesia",
+    "ph": "Philippines",
+    "th": "Thailand",
+    "bn": "Brunei",
+}
 # Keep high-signal fields for analysis, filtering, grouping, and auditability.
 CLEAN_COLUMNS = (
     "source_id",
@@ -82,8 +89,59 @@ def replace_emoji(text: str) -> str:
 def clean_text(text: str | None) -> str:
     text = replace_emoji(text or "")
     text = MENTION_RE.sub("", text)
-    text = VULGARITY_RE.sub(lambda match: match.group(0)[0] + "*" * (len(match.group(0)) - 1), text)
     return WHITESPACE_RE.sub(" ", text).strip()
+
+
+class ApiKeyTranslator:
+    """Cloud Translation v2 over REST with an API key.
+
+    Mirrors translate_v2.Client.translate(), which only accepts
+    service-account or gcloud credentials.
+    """
+
+    URL = "https://translation.googleapis.com/language/translate/v2"
+
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self.session = requests.Session()
+
+    def translate(
+        self,
+        values: str | list[str],
+        target_language: str,
+        source_language: str | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        single = isinstance(values, str)
+        payload: dict[str, Any] = {
+            "q": [values] if single else list(values),
+            "target": target_language,
+        }
+        if source_language:
+            payload["source"] = source_language
+        response = self.session.post(
+            self.URL, params={"key": self.api_key}, json=payload, timeout=60
+        )
+        if response.status_code == 400:
+            from google.api_core.exceptions import BadRequest
+
+            raise BadRequest(response.text[:500])
+        response.raise_for_status()
+        translations = response.json()["data"]["translations"]
+        return translations[0] if single else translations
+
+
+def get_translator():
+    """Use GOOGLE_TRANSLATE_API_KEY when set, else Google default credentials."""
+    global _translator
+    if _translator is None:
+        api_key = os.environ.get("GOOGLE_TRANSLATE_API_KEY", "").strip()
+        if api_key:
+            _translator = ApiKeyTranslator(api_key)
+        else:
+            from google.cloud import translate_v2
+
+            _translator = translate_v2.Client()
+    return _translator
 
 
 def translate_to_english(
@@ -96,11 +154,7 @@ def translate_to_english(
         # ISO 639-2 uses zxx for text with no linguistic content. Preserve
         # emoji-only and other non-linguistic comments without calling Translate.
         return text, "zxx"
-    global _translator
-    if _translator is None:
-        from google.cloud import translate_v2
-
-        _translator = translate_v2.Client()
+    translator = get_translator()
     options: dict[str, str] = {"target_language": "en"}
     if source_language and normalized_language not in {
         "en",
@@ -113,14 +167,14 @@ def translate_to_english(
     from google.api_core.exceptions import BadRequest
 
     try:
-        result = _translator.translate(text, **options)
+        result = translator.translate(text, **options)
     except BadRequest:
         # X-specific codes such as qme are not Google language codes. Retry
         # with source-language detection if an explicit code was rejected.
         if "source_language" in options:
             options.pop("source_language")
             try:
-                result = _translator.translate(text, **options)
+                result = translator.translate(text, **options)
             except BadRequest:
                 print(
                     f"Skipping translation for unsupported language code "
@@ -157,18 +211,16 @@ def translate_comments_batch(comments: list[dict[str, Any]]) -> list[tuple[str, 
     if not eligible:
         return results
 
-    global _translator
-    if _translator is None:
-        from google.cloud import translate_v2
+    from google.api_core.exceptions import BadRequest
 
-        _translator = translate_v2.Client()
+    translator = get_translator()
+    batches = translation_batches(eligible)
 
-    for start in range(0, len(eligible), TRANSLATION_BATCH_SIZE):
-        batch = eligible[start : start + TRANSLATION_BATCH_SIZE]
+    for batch_number, batch in enumerate(batches, start=1):
         texts = [text for _, text, _ in batch]
         for attempt in range(TRANSLATION_RETRIES):
             try:
-                translated = _translator.translate(texts, target_language="en")
+                translated = translator.translate(texts, target_language="en")
                 if isinstance(translated, dict):
                     translated = [translated]
                 for (row_index, original, source_language), item in zip(batch, translated):
@@ -176,6 +228,17 @@ def translate_comments_batch(comments: list[dict[str, Any]]) -> list[tuple[str, 
                         str(item.get("translatedText") or original),
                         str(item.get("detectedSourceLanguage") or source_language or "und"),
                     )
+                break
+            except BadRequest as exc:
+                # A rejected request fails the same way every time, so
+                # retrying cannot help.
+                print(
+                    f"Translation batch rejected ({exc}); preserving originals "
+                    f"for {len(batch)} comments.",
+                    flush=True,
+                )
+                for row_index, original, language in batch:
+                    results[row_index] = (original, language or "und")
                 break
             except Exception as exc:
                 if attempt + 1 < TRANSLATION_RETRIES:
@@ -195,9 +258,32 @@ def translate_comments_batch(comments: list[dict[str, Any]]) -> list[tuple[str, 
                     for row_index, original, language in batch:
                         results[row_index] = (original, language or "und")
         # Keep well below Google's documented per-second request quota.
-        if start + TRANSLATION_BATCH_SIZE < len(eligible):
+        if batch_number < len(batches):
             time.sleep(0.25)
     return results
+
+
+def translation_batches(
+    eligible: list[tuple[int, str, str | None]],
+) -> list[list[tuple[int, str, str | None]]]:
+    """Group texts by count and encoded size so each request stays under Google's limit."""
+    batches: list[list[tuple[int, str, str | None]]] = []
+    batch: list[tuple[int, str, str | None]] = []
+    batch_bytes = 0
+    for item in eligible:
+        # JSON-escaped length: non-ASCII text grows to \uXXXX in the request body.
+        item_bytes = len(json.dumps(item[1]))
+        if batch and (
+            len(batch) >= TRANSLATION_BATCH_SIZE
+            or batch_bytes + item_bytes > TRANSLATION_MAX_BATCH_BYTES
+        ):
+            batches.append(batch)
+            batch, batch_bytes = [], 0
+        batch.append(item)
+        batch_bytes += item_bytes
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 def first(row: dict[str, Any], *keys: str) -> Any:
@@ -235,8 +321,33 @@ def inferred_country(row: dict[str, Any]) -> Any:
             "unspecified",
             "n/a",
         }:
-            return value
+            country = str(value).strip()
+            return COUNTRY_ALIASES.get(country.casefold(), country)
     return None
+
+
+def is_english_youtube_post(row: dict[str, Any]) -> bool:
+    """Keep YouTube posts only when their language is known to be English."""
+    language = str(first(row, "lang", "language") or "").strip().casefold()
+    if language:
+        return language == "english" or language == "en" or language.startswith("en-")
+
+    text = " ".join(
+        str(row.get(key) or "").strip()
+        for key in ("title", "description")
+    ).strip()
+    if len(text) < 10:
+        return False
+
+    global _language_detector
+    if _language_detector is None:
+        _language_detector = (
+            LanguageDetectorBuilder
+            .from_all_languages()
+            .with_minimum_relative_distance(0.25)
+            .build()
+        )
+    return _language_detector.detect_language_of(text) == Language.ENGLISH
 
 
 def source_id(row: dict[str, Any], platform: str, source_type: str) -> str | None:
@@ -356,13 +467,36 @@ def normalize_row(
                 original_text = translated_text
         elif normalized_language != "en":
             original_text, lang = translate_to_english(original_text, str(lang))
-    likes = int(first(row, "like_count", "likeCount", "score", "ups") or 0)
-    replies = int(first(row, "reply_count", "comments_count", "total_reply_count", "num_comments") or 0)
-    reposts = int(first(row, "repost_count", "retweet_count") or 0)
-    quotes = int(first(row, "quote_count") or 0)
+    likes_value = first(
+        row,
+        "like_count",
+        "likeCount",
+        "likes",
+        "comment_like_count",
+        "score",
+        "ups",
+    )
+    replies_value = first(
+        row,
+        "reply_count",
+        "comments_count",
+        "commentsCount",
+        "comment_count",
+        "commentCount",
+        "total_reply_count",
+        "num_comments",
+    )
+    reposts_value = first(row, "repost_count", "retweet_count", "shares")
+    quotes_value = first(row, "quote_count")
+    likes = int(likes_value) if likes_value is not None else None
+    replies = int(replies_value) if replies_value is not None else None
+    reposts = int(reposts_value) if reposts_value is not None else None
+    quotes = int(quotes_value) if quotes_value is not None else None
     total = first(row, "total_engagement")
     if total is None:
-        total = likes + replies + reposts + quotes
+        available_counts = (likes, replies, reposts, quotes)
+        if any(value is not None for value in available_counts):
+            total = sum(value or 0 for value in available_counts)
     normalized = {
         "source_id": identifier,
         "platform": platform,
@@ -375,7 +509,7 @@ def normalize_row(
         "conversation_id": first(row, "conversation_id", "video_id", "media_id", "link_id", "post_id", "parent_post_id"),
         "parent_source_id": first(row, "parent_tweet_id", "parent_id", "parent_post_id"),
         "posted_at": posted_at(row, source_type, platform),
-        "matched_keywords": matched_topics(row),
+        "matched_keywords": matched_topics(row) or None,
         "like_count": likes,
         "reply_count": replies,
         "repost_count": reposts,
@@ -422,7 +556,11 @@ def upsert(session: requests.Session, base_url: str, key: str, table: str, rows:
             headers=headers(key, write=True),
             timeout=60,
         )
-        response.raise_for_status()
+        if not response.ok:
+            raise SystemExit(
+                f"{table} upsert failed ({response.status_code}): "
+                f"{response.text[:1200]}"
+            )
     return len(rows)
 
 
@@ -447,9 +585,64 @@ def delete_source_ids(
     return len(unique_ids)
 
 
+def clear_cleaned_tables(
+    session: requests.Session,
+    base_url: str,
+    key: str,
+) -> dict[str, int]:
+    """Delete existing cleaned rows before an explicit full refresh."""
+    deleted: dict[str, int] = {}
+    for table in ("clean_posts", "clean_comments"):
+        source_ids: list[str] = []
+        offset = 0
+        while True:
+            response = session.get(
+                f"{base_url}/rest/v1/{table}",
+                params={
+                    "select": "source_id",
+                    "limit": PAGE_SIZE,
+                    "offset": offset,
+                },
+                headers=headers(key),
+                timeout=60,
+            )
+            response.raise_for_status()
+            page = response.json()
+            source_ids.extend(
+                str(row["source_id"])
+                for row in page
+                if row.get("source_id") is not None
+            )
+            if len(page) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+        deleted[table] = delete_source_ids(
+            session,
+            base_url,
+            key,
+            table,
+            source_ids,
+        )
+        print(f"{table}: cleared {deleted[table]} existing rows", flush=True)
+    return deleted
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Normalize social-media rows into shared Supabase tables."
+    )
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="Delete all existing clean_posts and clean_comments rows before rebuilding them.",
+    )
+    args = parser.parse_args()
+
     base_url, key = credentials()
     session = requests.Session()
+    if args.full_refresh:
+        clear_cleaned_tables(session, base_url, key)
+
     platform_tables = (
         ("x", "x_posts", "x_replies"),
         ("reddit", "reddit_posts", "reddit_comments"),
@@ -487,7 +680,9 @@ def main() -> None:
         cleaned_posts = []
         excluded_posts = []
         for item in posts:
-            if inferred_country(item) is None:
+            if inferred_country(item) is None or (
+                platform == "youtube" and not is_english_youtube_post(item)
+            ):
                 identifier = source_id(item, platform, "post")
                 if identifier:
                     excluded_posts.append(identifier)
