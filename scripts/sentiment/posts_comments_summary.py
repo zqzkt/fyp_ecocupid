@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import json
 import sys
+import argparse
 from dotenv import load_dotenv
 from google import genai
 from supabase import create_client, Client
@@ -40,6 +41,28 @@ def get_previous_month():
         
     # Format with zero-padding for single-digit months
     return f"{prev_year}-{prev_month:02d}-01"
+
+def normalize_month(month_str):
+    """
+    Accepts 'YYYY-MM' or 'YYYY-MM-DD' and returns 'YYYY-MM-01'.
+    """
+    parts = month_str.strip().split('-')
+    if len(parts) < 2:
+        raise argparse.ArgumentTypeError(f"Invalid month '{month_str}', expected YYYY-MM")
+    try:
+        y, m = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid month '{month_str}', expected YYYY-MM")
+    if not 1 <= m <= 12:
+        raise argparse.ArgumentTypeError(f"Invalid month '{month_str}', month must be 01-12")
+    return f"{y}-{m:02d}-01"
+
+def get_existing_summaries(supabase, month):
+    """
+    Returns a set of (country, keywords) pairs that already have a summary for the given month.
+    """
+    response = supabase.table("summary").select("country, keywords").eq("month", month).execute()
+    return {(row["country"], row["keywords"]) for row in response.data}
 
 def get_monthly_keywords(supabase, country, month):
     # keywords = []
@@ -125,17 +148,42 @@ def generate_discussion_summary(sample_texts, keywords):
         return "Summary could not be generated."
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate monthly discussion summaries per country and topic.")
+    parser.add_argument(
+        "--months",
+        nargs="+",
+        type=normalize_month,
+        help="Months to summarise in YYYY-MM format (e.g. --months 2026-08 2026-09). "
+             "Explicitly specified months are always regenerated. "
+             "Defaults to the previous month, skipping summaries that already exist.",
+    )
+    return parser.parse_args()
+
 def main():
-    month = get_previous_month()
+    args = parse_args()
+    # Explicitly requested months are force-rerun; the default run skips existing summaries
+    force = args.months is not None
+    months = args.months if force else [get_previous_month()]
+    for month in months:
+        print(f"=== Processing month {month} ===")
+        summarize_month(month, force=force)
+
+def summarize_month(month, force=False):
+    existing = set() if force else get_existing_summaries(supabase, month)
     for country, country_info in COUNTRIES.items():
         possible_country_spellings = [country, country_info["regionCode"]]
         list_of_keywords = get_monthly_keywords(supabase, country, month)
-        
+
         for row in list_of_keywords:
             keyword_string = row.get("monthly_keywords", "")
             keywords_list = [kw.strip() for kw in keyword_string.split(",") if kw.strip()]
-            
+
             if not keywords_list:
+                continue
+
+            if (country, keyword_string) in existing:
+                print(f"Skipping {country} [{keyword_string}] for {month}: summary already exists.")
                 continue
 
             comments_data = fetch_comments_by_country_keyword(
