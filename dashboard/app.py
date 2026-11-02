@@ -70,6 +70,11 @@ communication_insights_page = st.Page(
     title="Communication Insights",
 )
 
+sentiment_analysis_page = st.Page(
+    "views/sentiment_analysis.py",
+    title="Sentiment Analysis",
+)
+
 
 page = st.navigation(
     [
@@ -79,6 +84,7 @@ page = st.navigation(
         data_page,
         communication_channels_page,
         communication_insights_page,
+        sentiment_analysis_page,
     ]
 )
 
@@ -103,6 +109,11 @@ elif page == communication_insights_page:
 
     # Communication Insights uses its own single-country filters
     # inside communication_insights.py.
+    pass
+
+elif page == sentiment_analysis_page:
+
+    # Sentiment Analysis uses its own month and multi-country filters.
     pass
 
 elif page != communication_channels_page:

@@ -1,4 +1,7 @@
 apify-client
+beautifulsoup4>=4.12
+keybert
+numpy
 pandas>=2.0
 python-dotenv>=1.0
 requests>=2.31
@@ -6,10 +9,12 @@ emoji>=2.16.0
 google-cloud-translate
 langdetect
 lingua-language-detector
-transformers<5
+sentence-transformers
+supabase
+scikit-learn
 sentencepiece
 torch
-scikit-learn
+transformers<5
 joblib
 streamlit>=1.50
 plotly>=5.18
