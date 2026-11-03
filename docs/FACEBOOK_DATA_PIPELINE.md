@@ -72,18 +72,24 @@ Required variables include:
 APIFY_TOKEN=...
 SUPABASE_URL=...
 SUPABASE_SECRET_KEY=...
-GOOGLE_TRANSLATE_API_KEY=...
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_KEY` are accepted in place of
 `SUPABASE_SECRET_KEY`. The key must be a server-side secret or service-role
 key; publishable and anon keys are rejected.
 
-Google Cloud Translation is needed for post translation in `facebook.py` and
-comment translation in `clean_social.py`. Set either
-`GOOGLE_TRANSLATE_API_KEY` (a Cloud Translation API key) or
-`GOOGLE_APPLICATION_CREDENTIALS` (a service-account JSON file). The API key
-is used when both are set.
+Post translation in `facebook.py` and comment translation in
+`clean_social.py` use Google Cloud Translation. You do not need to set
+`GOOGLE_TRANSLATE_API_KEY` or `GOOGLE_APPLICATION_CREDENTIALS`: the scripts
+use Google Application Default Credentials (ADC) when no translation API key
+is configured. For local runs, authenticate with
+`gcloud auth application-default login`. In a deployed environment, use its
+standard Google Cloud identity. The Cloud Translation API must be enabled for
+the project, and the identity must be authorized to use it.
+
+If translation is unavailable for a batch, the cleaner preserves the original
+text. Posts that need translation may remain untranslated and therefore may
+not match English topic keywords.
 
 The `.env` file must remain private and must not be committed to Git.
 

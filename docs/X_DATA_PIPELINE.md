@@ -564,16 +564,19 @@ python scripts/cleaning/clean_social.py
 For comments with a known non-English language, the cleaner uses Google Cloud
 Translation to translate the text to English. When a comment has no language
 metadata, Cloud Translation detects its language during translation. Configure
-Google Application Default Credentials for a project with the Cloud Translation
-API enabled before running the cleaner. For local development, authenticate with:
+Google Application Default Credentials (ADC) for a project with the Cloud
+Translation API enabled before running the cleaner. You do not need to set
+`GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_TRANSLATE_API_KEY`. For local
+development, authenticate with:
 
 ```bash
 gcloud auth application-default login
 ```
 
-In deployed environments, provide credentials through the standard Google Cloud
-ADC mechanism, such as `GOOGLE_APPLICATION_CREDENTIALS` pointing to a service
-account credentials file.
+In deployed environments, use the platform's standard Google Cloud identity.
+That identity must be authorized to use Cloud Translation. If translation
+fails after the client is initialized, the cleaner preserves the original
+comment text.
 
 The cleaner is idempotent: rerunning it updates the same `source_id` rows rather
 than creating duplicates. This requires the migration to be applied first.
