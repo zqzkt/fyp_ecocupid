@@ -129,16 +129,22 @@ def db() -> Client:
     return create_client(url, key)
 
 
-def _load_table(client: Client, table_name: str) -> pd.DataFrame:
+def _load_table(
+    client: Client, table_name: str, environmental_only: bool = False
+) -> pd.DataFrame:
     """Load an entire Supabase table using pagination."""
     rows: list[dict[str, Any]] = []
     start = 0
 
     try:
         while True:
+            query = client.table(table_name).select(",".join(COMMON_COLUMNS))
+            # Only posts Gemini flagged as environmental (scripts/cleaning/filter_environmental.py)
+            if environmental_only:
+                query = query.eq("is_environmental", True)
             response = (
-                client.table(table_name)
-                .select(",".join(COMMON_COLUMNS))
+                query
+                .order("id")
                 .range(start, start + PAGE_SIZE - 1)
                 .execute()
             )
@@ -165,7 +171,7 @@ def load_engagement_data(
     """Load both posts and comments from Supabase."""
     client = client or db()
 
-    posts = _load_table(client, POSTS_TABLE)
+    posts = _load_table(client, POSTS_TABLE, environmental_only=True)
     comments = _load_table(client, COMMENTS_TABLE)
 
     return posts, comments

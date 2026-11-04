@@ -334,6 +334,22 @@ def run_cleaner() -> None:
             f"Cleaning failed with exit code {error.returncode}; "
             "raw rows remain stored, but the clean tables may be incomplete."
         ) from error
+    run_environmental_filter()
+
+
+def run_environmental_filter() -> None:
+    """Flag newly cleaned posts as environmental so downstream analysis can filter on them."""
+    flagger = REPO_ROOT / "scripts" / "cleaning" / "filter_environmental.py"
+    # Flush so this appears before the subprocess's own output
+    print("Clean tables refreshed; flagging environmental posts...", flush=True)
+    try:
+        subprocess.run([sys.executable, str(flagger)], cwd=REPO_ROOT, check=True)
+    except subprocess.CalledProcessError as error:
+        # Not fatal: unflagged posts stay null and are picked up on the next run
+        print(
+            f"Environmental flagging failed with exit code {error.returncode}; "
+            "new posts stay unflagged (hidden from analysis) until it is re-run."
+        )
 
 
 def run_sentiment(*, platform: str | None = None, dry_run: bool = False) -> None:
