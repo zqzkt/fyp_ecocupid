@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from communication_channels_data import (
+    ENVIRONMENTAL_ONLY,
     _as_list,
     _load_table,
     add_date_columns,
@@ -120,7 +121,9 @@ def load_insights_data() -> dict[str, pd.DataFrame]:
     return {
         "sentiment": sentiment,
         "summaries": summaries,
-        "posts": add_date_columns(_load_table("clean_posts"), "posts"),
+        "posts": add_date_columns(
+            _load_table("clean_posts", filters=ENVIRONMENTAL_ONLY), "posts"
+        ),
         "comments": add_date_columns(_load_table("clean_comments"), "comments"),
     }
 
