@@ -5,9 +5,10 @@ import sys
 from dotenv import load_dotenv
 from google import genai
 from supabase import create_client, Client
-from datetime import date
+from datetime import date, datetime, timezone
 import json
 import time
+import argparse
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
@@ -213,8 +214,18 @@ def generate_engagement_analysis(country, keywords, top_posts, bottom_posts, sco
             response = gemini_client.models.generate_content(
                 model='gemini-3.1-flash-lite',
                 contents=prompt,
+                # JSON mode stops Gemini adding prose or fences, and makes malformed output rarer
+                config={'response_mime_type': 'application/json'},
             )
             clean_json = response.text.strip().removeprefix("```json").removesuffix("```").strip()
+
+            # Gemini occasionally still emits malformed JSON (e.g. a stray bracket), so regenerate
+            try:
+                json.loads(clean_json)
+            except json.JSONDecodeError as e:
+                if attempt < GEMINI_RETRIES:
+                    print(f"Malformed JSON from Gemini (attempt {attempt}/{GEMINI_RETRIES}: {e}), regenerating...")
+                    continue
             return clean_json
 
         except Exception as e:
@@ -227,12 +238,47 @@ def generate_engagement_analysis(country, keywords, top_posts, bottom_posts, sco
             print(f"Error generating analysis: {e}")
             return None
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate engagement analysis per country and topic.")
+    parser.add_argument(
+        "month",
+        nargs="?",
+        default=None,
+        help="Month in 'YYYY-MM-01' format, e.g. 2026-09-01. Defaults to the previous month.",
+    )
+    parser.add_argument(
+        "--country",
+        nargs="+",
+        help="Only analyse these countries, e.g. --country Singapore Malaysia. Matching topics are always re-run.",
+    )
+    parser.add_argument(
+        "--topic",
+        nargs="+",
+        help="Only analyse these topic names, e.g. --topic \"Climate Change\". Matching topics are always re-run.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run every topic for the month, even ones that already have an analysis.",
+    )
+    return parser.parse_args()
+
 def main():
-    # Optional month override in 'YYYY-MM-01' format, e.g. python topic_based_analysis.py 2026-09-01
-    month = sys.argv[1] if len(sys.argv) > 1 else get_previous_month()
-    analysed_topics = get_analysed_topics(supabase, month)
+    args = parse_args()
+    month = args.month or get_previous_month()
+
+    # Case-insensitive filters; None means no restriction
+    countries_filter = {c.casefold() for c in args.country} if args.country else None
+    topics_filter = {t.casefold() for t in args.topic} if args.topic else None
+
+    # Explicitly targeted topics are force re-run; otherwise only new topics are analysed
+    force = args.force or countries_filter is not None or topics_filter is not None
+    analysed_topics = set() if force else get_analysed_topics(supabase, month)
 
     for country, region_code in COUNTRIES.items():
+        if countries_filter is not None and country.casefold() not in countries_filter and region_code.casefold() not in countries_filter:
+            continue
+
         possible_country_spellings = [country, region_code]
         list_of_keywords = get_monthly_keywords(supabase, country, month)
 
@@ -242,6 +288,9 @@ def main():
             keywords_list = [kw.strip() for kw in keyword_string.split(",") if kw.strip()]
 
             if not keywords_list:
+                continue
+
+            if topics_filter is not None and (topic_name or "").casefold() not in topics_filter:
                 continue
 
             # Only analyse topics that are new since the last run
@@ -289,7 +338,9 @@ def main():
                                 'captions': analysis_dict.get('captions', ''),
                                 'what_not_to_do': analysis_dict.get('what_not_to_do', ''),
                                 'top_post_links': top_links,
-                                'bottom_post_links': bottom_links
+                                'bottom_post_links': bottom_links,
+                                # Set explicitly: the column default only applies on insert, not when the upsert overwrites a row
+                                'updated_at': datetime.now(timezone.utc).isoformat()
                             }
                             
                             # Upsert to Supabase
