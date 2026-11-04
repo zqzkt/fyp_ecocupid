@@ -97,6 +97,7 @@ def fetch_posts_by_country_keyword(supabase, countries, keywords, month):
     while True:
         query = supabase.table('clean_posts') \
             .select('cleaned_text, total_engagement, platform, post_url') \
+            .eq('is_environmental', True) \
             .overlaps('matched_keywords', keywords) \
             .gte('posted_at', start_timestamp) \
             .lt('posted_at', end_timestamp)
