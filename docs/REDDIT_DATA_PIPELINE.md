@@ -6,10 +6,8 @@ This document explains how the project collects Reddit posts and comments with
 Apify and stores the cleaned results in Supabase.
 
 The collector searches the previous calendar month's top-ranked monthly topic
-keywords across the project's target countries. It runs one Apify actor run
-per country to reduce timeout risk while retaining the complete month and
-comment crawling. It keeps English posts and their comments, while comments
-may remain in any language.
+keywords across the project's target countries. It keeps English posts and
+their comments, while comments may remain in any language.
 
 ## Main Components
 
@@ -37,10 +35,10 @@ Keep topics where `topic_rank <= 3`
 Build one Reddit search URL per monthly keyword and country
     |
     v
-Start one `harshmaur/reddit-scraper` Apify run per country
+Start one `harshmaur/reddit-scraper` Apify run
     |
     v
-Apply the cumulative `$12` budget across country runs
+Apply one cumulative `$12` run budget
     |
     v
 Collect posts and comments in memory
@@ -94,10 +92,8 @@ Duplicate keywords are removed per country before the search URLs are created.
 
 ## 3. Apify Collection and Budget
 
-The collector groups generated search URLs by country and starts one actor run
-per country. It does not start a separate actor run for each keyword. The
-configured `$12` budget is divided evenly across countries with keywords, so
-the total budget remains capped at `$12`.
+The collector sends all generated search URLs in one actor run. It does not
+start a separate actor run for each keyword.
 
 The run uses:
 
@@ -110,22 +106,16 @@ The actor input enables:
 
 * Previous-month post dates using `postedAfter` and `postedBefore`
 * Comment crawling with `crawlCommentsPerPost`
+* Apify residential proxy support
 * One community per search request
 
-The script also validates each returned post and comment timestamp locally
-before synchronization, so records outside the previous calendar month are
-discarded even if the actor returns them. Existing rows in Supabase are not
-deleted by an upsert.
-
-Proxy configuration is intentionally omitted because the Reddit Scraper actor
-handles its own connections and pricing. After each country run finishes, the
-script refreshes the run from Apify and reports its final `usage_total_usd`.
-Failed countries are reported while successful country results continue through
-processing and synchronization.
+After the run finishes, the script refreshes the run from Apify and reports its
+final `usage_total_usd`. The single run-level charge cap is the authoritative
+budget for the complete Reddit scrape.
 
 The Apify account may still show other charges from previous runs, other
-scripts, storage, or usage outside this run. The printed amounts are for the
-current country runs and their cumulative total.
+scripts, storage, or usage outside this run. The printed amount is for the
+current actor run.
 
 ## 4. Post and Comment Transformation
 
