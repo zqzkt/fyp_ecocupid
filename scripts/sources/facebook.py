@@ -1762,12 +1762,10 @@ def sync_to_supabase(posts, comments):
     ).strip()
 
     if not url or not key:
-        print("✗ Missing SUPABASE_URL or Supabase server key in .env")
-        return None
+        raise SystemExit("SUPABASE_URL and a server-side Supabase key are required.")
 
     if key.startswith("sb_publishable_") or key.startswith("sb_anon_"):
-        print("✗ Supabase key must be a server-only secret/service-role key")
-        return None
+        raise SystemExit("Facebook upload requires a server-side Supabase key.")
 
     try:
         from scripts.supabase.facebook_pipeline import sync_facebook_rows
@@ -1777,15 +1775,8 @@ def sync_to_supabase(posts, comments):
         print("✓ Supabase sync successful")
         print(f"Upserted: {counts}")
         return counts
-    except ImportError as error:
-        print(f"✗ Import error: {error}")
     except Exception as error:
-        print(f"✗ Supabase sync failed: {error}")
-        import traceback
-
-        traceback.print_exc()
-
-    return None
+        raise SystemExit(f"Facebook Supabase sync failed: {error}") from error
 
 
 # =========================================================

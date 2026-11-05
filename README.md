@@ -12,6 +12,8 @@ Streamlit dashboard.
 - `scripts/sources/` — Facebook, Instagram, Reddit, X, and YouTube collectors.
 - `scripts/cleaning/clean_social.py` — normalizes collected social posts and
   comments in Supabase into shared clean tables.
+- `scripts/cleaning/filter_environmental.py` — classifies unlabelled clean
+  posts and writes `is_environmental` as a boolean.
 - `scripts/sentiment/` — emotion model and sentiment aggregation.
 - `scripts/supabase/` — platform-specific Supabase integrations.
 - `dashboard/` — Streamlit dashboard and its pages.
@@ -111,14 +113,16 @@ order:
 8. Sentiment analysis
 
 The pipeline continues to the other collectors if a collector fails, then
-attempts to clean data that was successfully collected. Sentiment runs only
-after cleaning succeeds. It passes `--run-now` so sentiment can be computed
+skips the processing stages unless every collector succeeds. It runs shared
+cleaning once, then environmental classification, then sentiment. Sentiment runs only
+after environmental classification succeeds. It passes `--run-now` so sentiment can be computed
 when the pipeline is run on a day other than the first of the month. The
 pipeline prints a step-by-step summary and exits with a nonzero status if a
 step fails.
 
-To run an individual social collector, invoke its script from the repository
-root, for example:
+To run an individual social collector without the shared cleaning and
+classification stages, invoke its script from the repository root, for
+example:
 
 ```bash
 python scripts/sources/twitter.py

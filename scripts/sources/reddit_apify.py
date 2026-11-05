@@ -274,35 +274,29 @@ def _sync_supabase(posts: list[dict], comments: list[dict]) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(repo_root / ".env")
-        
-        # DEBUG: Check credentials
-        url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
-        key = os.environ.get("SUPABASE_KEY", "").strip()
-        print(f"\nDEBUG: SUPABASE_URL = '{url}'")
-        print(f"DEBUG: SUPABASE_KEY = {'[SET]' if key else '[EMPTY]'} (length: {len(key)})")
-        
-        if not url or not key:
-            print("✗ Missing SUPABASE_URL or SUPABASE_KEY in .env")
-            return
-        
-        from scripts.supabase.reddit_pipeline import sync_reddit_data
-        print("Syncing to Supabase...")
-        # Convert NaN to None for JSON serialization
-        posts_dict = pd.DataFrame(posts).where(pd.notna(pd.DataFrame(posts)), None).to_dict('records')
-        comments_dict = pd.DataFrame(comments).where(pd.notna(pd.DataFrame(comments)), None).to_dict('records')
-        counts = sync_reddit_data(posts_dict, comments_dict)
-        print("✓ Supabase sync successful")
-        print(f"Upserted: {counts}")
-    except ImportError as e:
-        print(f"✗ Import error: {e}")
-    except Exception as e:
-        print(f"✗ Supabase sync failed: {e}")
-        import traceback
-        traceback.print_exc()
+
+    from dotenv import load_dotenv
+    load_dotenv(repo_root / ".env")
+
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = (
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or ""
+    ).strip()
+    if not url or not key:
+        raise SystemExit("SUPABASE_URL and a server-side Supabase key are required.")
+    if key.startswith(("sb_publishable_", "sb_anon_")):
+        raise SystemExit("Reddit upload requires a server-side Supabase key.")
+
+    from scripts.supabase.reddit_pipeline import sync_reddit_data
+    print("Syncing to Supabase...")
+    posts_dict = pd.DataFrame(posts).where(pd.notna(pd.DataFrame(posts)), None).to_dict('records')
+    comments_dict = pd.DataFrame(comments).where(pd.notna(pd.DataFrame(comments)), None).to_dict('records')
+    counts = sync_reddit_data(posts_dict, comments_dict)
+    print("✓ Supabase sync successful")
+    print(f"Upserted: {counts}")
 
 _sync_supabase(posts_df.to_dict('records'), comments_df.to_dict('records'))
 

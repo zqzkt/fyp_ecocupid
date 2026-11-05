@@ -267,15 +267,7 @@ def sync_x_jsonl(out_dir: Path | None = None) -> dict[str, int]:
         "x_replies": upsert_batches(session, base_url, key, "x_replies", replies, "reply_id"),
     }
     print(json.dumps(counts, indent=2))
-    from scripts.social_media_pipeline import (
-        run_cleaner,
-        run_environmental_filter,
-        run_sentiment,
-    )
-
-    run_cleaner()
-    run_environmental_filter()
-    run_sentiment()
+    _run_social_postprocessing()
     return counts
 
 
@@ -306,9 +298,6 @@ def sync_x_rows(
     users: list[dict[str, Any]],
     posts: list[dict[str, Any]],
     replies: list[dict[str, Any]],
-    *,
-    sentiment_platform: str | None = None,
-    sentiment_dry_run: bool = False,
 ) -> dict[str, int]:
     """Project and upsert freshly collected X rows without local staging files."""
     base_url, key = _credentials()
@@ -325,6 +314,11 @@ def sync_x_rows(
         ),
     }
     print(json.dumps(counts, indent=2))
+    return counts
+
+
+def _run_social_postprocessing() -> None:
+    """Run shared post-collection steps for standalone X pipeline commands."""
     from scripts.social_media_pipeline import (
         run_cleaner,
         run_environmental_filter,
@@ -333,8 +327,7 @@ def sync_x_rows(
 
     run_cleaner()
     run_environmental_filter()
-    run_sentiment(platform=sentiment_platform, dry_run=sentiment_dry_run)
-    return counts
+    run_sentiment()
 
 
 def previous_month_window(reference: datetime | None = None) -> tuple[str, str]:
@@ -380,6 +373,7 @@ def run_monthly_job(reference: datetime | None = None, *, ignore_day_guard: bool
             f"Monthly X collection failed with exit code {error.returncode}; "
             "no monthly rows were uploaded by this run."
         ) from error
+    _run_social_postprocessing()
 
 
 def run_x_collection(*, force: bool = True) -> None:
@@ -393,6 +387,7 @@ def run_x_collection(*, force: bool = True) -> None:
         subprocess.run(command, cwd=REPO_ROOT, check=True)
     except subprocess.CalledProcessError as error:
         raise SystemExit(f"X collection failed with exit code {error.returncode}.") from error
+    _run_social_postprocessing()
 
 if __name__ == "__main__":
     if "--monthly" in sys.argv[1:]:
