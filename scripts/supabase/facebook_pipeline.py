@@ -305,7 +305,7 @@ def sync_facebook_rows(
         )
     )
 
-    from scripts.supabase.twitter_pipeline import run_cleaner
+    from scripts.social_media_pipeline import run_cleaner
 
     run_cleaner()
 

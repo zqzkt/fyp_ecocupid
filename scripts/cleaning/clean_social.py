@@ -527,13 +527,20 @@ def normalize_row(
     return normalized
 
 
-def fetch_rows(session: requests.Session, base_url: str, key: str, table: str) -> list[dict[str, Any]]:
+def fetch_rows(
+    session: requests.Session,
+    base_url: str,
+    key: str,
+    table: str,
+    *,
+    select: str = "*",
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
         response = session.get(
             f"{base_url}/rest/v1/{table}",
-            params={"select": "*", "limit": PAGE_SIZE, "offset": offset},
+            params={"select": select, "limit": PAGE_SIZE, "offset": offset},
             headers=headers(key),
             timeout=60,
         )
@@ -545,6 +552,42 @@ def fetch_rows(session: requests.Session, base_url: str, key: str, table: str) -
         if len(page) < PAGE_SIZE:
             return rows
         offset += PAGE_SIZE
+
+
+def fetch_existing_source_ids(
+    session: requests.Session,
+    base_url: str,
+    key: str,
+    table: str,
+    source_ids: Iterable[str],
+) -> set[str]:
+    """Find which candidate source IDs are already in a shared clean table."""
+    candidates = list(dict.fromkeys(source_ids))
+    existing: set[str] = set()
+    for start in range(0, len(candidates), BATCH_SIZE):
+        chunk = candidates[start : start + BATCH_SIZE]
+        escaped_values = [
+            value.replace("\\", "\\\\").replace('"', '\\"')
+            for value in chunk
+        ]
+        values = ",".join(f'"{value}"' for value in escaped_values)
+        response = session.get(
+            f"{base_url}/rest/v1/{table}",
+            params={
+                "select": "source_id",
+                "source_id": f"in.({values})",
+                "limit": BATCH_SIZE,
+            },
+            headers=headers(key),
+            timeout=60,
+        )
+        response.raise_for_status()
+        existing.update(
+            str(row["source_id"])
+            for row in response.json()
+            if row.get("source_id") is not None
+        )
+    return existing
 
 
 def upsert(session: requests.Session, base_url: str, key: str, table: str, rows: list[dict[str, Any]]) -> int:
@@ -677,9 +720,47 @@ def main() -> None:
             for row in posts
             if first(row, "post_id", "video_id", "media_id", "id", "name") is not None
         }
+        post_source_ids = {
+            identifier
+            for item in posts
+            if (identifier := source_id(item, platform, "post"))
+        }
+        comment_source_ids = {
+            identifier
+            for item in comments
+            if (identifier := source_id(item, platform, "comment"))
+        }
+        existing_post_ids = (
+            fetch_existing_source_ids(
+                session, base_url, key, "clean_posts", post_source_ids
+            )
+            if not args.full_refresh
+            else set()
+        )
+        existing_comment_ids = (
+            fetch_existing_source_ids(
+                session, base_url, key, "clean_comments", comment_source_ids
+            )
+            if not args.full_refresh
+            else set()
+        )
+        new_posts = [
+            item
+            for item in posts
+            if source_id(item, platform, "post") not in existing_post_ids
+        ]
+        new_comments = [
+            item
+            for item in comments
+            if source_id(item, platform, "comment") not in existing_comment_ids
+        ]
+        if not new_posts and not new_comments:
+            print(f"{platform}: no new clean rows; skipping.", flush=True)
+            continue
+
         cleaned_posts = []
         excluded_posts = []
-        for item in posts:
+        for item in new_posts:
             if inferred_country(item) is None or (
                 platform == "youtube" and not is_english_youtube_post(item)
             ):
@@ -693,7 +774,7 @@ def main() -> None:
         cleaned_comments = []
         excluded_comments = []
         eligible_comments = []
-        for item in comments:
+        for item in new_comments:
             comment = dict(item)
             parent_id = first(
                 comment,

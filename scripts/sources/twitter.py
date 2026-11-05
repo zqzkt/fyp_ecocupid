@@ -5,8 +5,9 @@ X pay-per-use (approx.):
   user read  $0.010  (author expansions)
   media read $0.005  (media expansions)
 
-Use the newest post stored in Supabase as the daily checkpoint. The default
-collection includes a small reply sample and does not store author profiles.
+Collect posts from the previous calendar month using X full-archive search.
+The default collection includes a small reply sample and does not store
+author profiles.
 """
 
 from __future__ import annotations
@@ -437,11 +438,11 @@ def parse_args() -> argparse.Namespace:
         default=20,
         help="Maximum replies to fetch per selected conversation.",
     )
-    parser.add_argument("--force", action="store_true", help="Ignore the Supabase checkpoint and search recent posts again.")
-    parser.add_argument("--start-time", help="Inclusive UTC ISO-8601 start time for a bounded archive search.")
-    parser.add_argument("--end-time", help="Exclusive UTC ISO-8601 end time for a bounded archive search.")
-    parser.add_argument("--archive", action="store_true", help="Use X full-archive search instead of recent search.")
-    parser.add_argument("--topic-month", help="YYYY-MM-01 month in monthly_topic_stats; defaults to latest month.")
+    parser.add_argument("--force", action="store_true", help="Deprecated compatibility flag; ignored.")
+    parser.add_argument("--start-time", help="Override the default previous-month start time (inclusive, UTC).")
+    parser.add_argument("--end-time", help="Override the default previous-month end time (exclusive, UTC).")
+    parser.add_argument("--archive", action="store_true", help="Deprecated compatibility flag; full archive is always used.")
+    parser.add_argument("--topic-month", help="YYYY-MM-01 month in monthly_topic_stats; defaults to the previous month.")
     parser.add_argument("--dry-run", action="store_true", help="Print cost estimate only. No API call.")
     parser.add_argument(
         "--sentiment-platform",
@@ -458,6 +459,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from scripts.supabase.twitter_pipeline import previous_month_window
+
+    default_start_time, default_end_time = previous_month_window()
+    args.start_time = args.start_time or default_start_time
+    args.end_time = args.end_time or default_end_time
+    args.topic_month = args.topic_month or f"{args.start_time[:7]}-01"
+    print(
+        "Collection window (UTC, end exclusive): "
+        f"{args.start_time} to {args.end_time}"
+    )
 
     if args.max_posts > HARD_MAX_POSTS:
         raise SystemExit(f"--max-posts {args.max_posts} exceeds hard cap {HARD_MAX_POSTS} (cost control).")
@@ -482,14 +496,7 @@ def main() -> None:
 
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    from scripts.supabase.twitter_pipeline import latest_post_id
     from scripts.supabase.twitter_pipeline import topic_keyword_groups
-
-    since_id = None if args.force or args.archive else latest_post_id()
-    if since_id:
-        print(f"Searching for posts newer than Supabase checkpoint {since_id}...")
-    else:
-        print("No Supabase checkpoint found; searching recent posts...")
 
     session = _client()
     collected_at = datetime.now(timezone.utc).isoformat()
@@ -515,10 +522,10 @@ def main() -> None:
             collected_at,
             False,
             args.with_users,
-            since_id,
+            None,
             args.start_time,
             args.end_time,
-            SEARCH_ALL if args.archive else SEARCH_RECENT,
+            SEARCH_ALL,
             keywords,
         )
         seed_posts.extend(country_posts)
@@ -553,7 +560,7 @@ def main() -> None:
                 args.with_users,
                 args.start_time,
                 args.end_time,
-                SEARCH_ALL if args.archive else SEARCH_RECENT,
+                SEARCH_ALL,
                 post.get("matched_keywords") or [],
             )
             replies.extend(post_replies)

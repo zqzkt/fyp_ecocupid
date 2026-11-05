@@ -267,7 +267,14 @@ def sync_x_jsonl(out_dir: Path | None = None) -> dict[str, int]:
         "x_replies": upsert_batches(session, base_url, key, "x_replies", replies, "reply_id"),
     }
     print(json.dumps(counts, indent=2))
+    from scripts.social_media_pipeline import (
+        run_cleaner,
+        run_environmental_filter,
+        run_sentiment,
+    )
+
     run_cleaner()
+    run_environmental_filter()
     run_sentiment()
     return counts
 
@@ -318,40 +325,16 @@ def sync_x_rows(
         ),
     }
     print(json.dumps(counts, indent=2))
+    from scripts.social_media_pipeline import (
+        run_cleaner,
+        run_environmental_filter,
+        run_sentiment,
+    )
+
     run_cleaner()
+    run_environmental_filter()
     run_sentiment(platform=sentiment_platform, dry_run=sentiment_dry_run)
     return counts
-
-
-def run_cleaner() -> None:
-    """Refresh the shared clean tables after a successful raw-data upload."""
-    cleaner = REPO_ROOT / "scripts" / "cleaning" / "clean_social.py"
-    print("Raw data uploaded; cleaning all available platform tables...")
-    try:
-        subprocess.run([sys.executable, str(cleaner)], cwd=REPO_ROOT, check=True)
-    except subprocess.CalledProcessError as error:
-        raise SystemExit(
-            f"Cleaning failed with exit code {error.returncode}; "
-            "raw rows remain stored, but the clean tables may be incomplete."
-        ) from error
-
-
-def run_sentiment(*, platform: str | None = None, dry_run: bool = False) -> None:
-    """Rebuild environment sentiment after raw X data has been cleaned."""
-    scorer = REPO_ROOT / "scripts" / "sentiment" / "sentiment_analysis.py"
-    print("Clean tables refreshed; deriving environment sentiment...")
-    command = [sys.executable, str(scorer), "--all"]
-    if platform:
-        command.extend(("--platform", platform))
-    if dry_run:
-        command.append("--dry-run")
-    try:
-        subprocess.run(command, cwd=REPO_ROOT, check=True)
-    except subprocess.CalledProcessError as error:
-        raise SystemExit(
-            f"Sentiment derivation failed with exit code {error.returncode}; "
-            "raw and clean rows remain stored, but sentiment_analysis may be stale."
-        ) from error
 
 
 def previous_month_window(reference: datetime | None = None) -> tuple[str, str]:

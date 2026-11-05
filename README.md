@@ -107,7 +107,8 @@ order:
 4. X
 5. YouTube
 6. Shared social cleaning
-7. Sentiment analysis
+7. Environmental filtering
+8. Sentiment analysis
 
 The pipeline continues to the other collectors if a collector fails, then
 attempts to clean data that was successfully collected. Sentiment runs only

@@ -1,4 +1,4 @@
-"""Run all social-media collectors, cleaning, and sentiment analysis."""
+"""Run social-media collectors, cleaning, environmental filtering, and sentiment."""
 
 from __future__ import annotations
 
@@ -21,6 +21,58 @@ CLEANER = REPO_ROOT / "scripts" / "cleaning" / "clean_social.py"
 SENTIMENT_ANALYSIS = (
     REPO_ROOT / "scripts" / "sentiment" / "sentiment_analysis.py"
 )
+ENVIRONMENTAL_FILTER = (
+    REPO_ROOT / "scripts" / "cleaning" / "filter_environmental.py"
+)
+
+
+def run_cleaner() -> None:
+    """Refresh the shared clean tables after a successful raw-data upload."""
+    print("Raw data uploaded; cleaning all available platform tables...")
+    try:
+        subprocess.run(
+            [sys.executable, str(CLEANER)],
+            cwd=REPO_ROOT,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Cleaning failed with exit code {error.returncode}; "
+            "raw rows remain stored, but the clean tables may be incomplete."
+        ) from error
+
+
+def run_environmental_filter() -> None:
+    """Classify clean social posts as environmentally related."""
+    print("Clean tables refreshed; classifying environmental posts...")
+    try:
+        subprocess.run(
+            [sys.executable, str(ENVIRONMENTAL_FILTER)],
+            cwd=REPO_ROOT,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Environmental filtering failed with exit code {error.returncode}; "
+            "environmental labels may be incomplete."
+        ) from error
+
+
+def run_sentiment(*, platform: str | None = None, dry_run: bool = False) -> None:
+    """Rebuild environment sentiment after raw data has been cleaned."""
+    print("Clean tables refreshed; deriving environment sentiment...")
+    command = [sys.executable, str(SENTIMENT_ANALYSIS), "--all"]
+    if platform:
+        command.extend(("--platform", platform))
+    if dry_run:
+        command.append("--dry-run")
+    try:
+        subprocess.run(command, cwd=REPO_ROOT, check=True)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Sentiment derivation failed with exit code {error.returncode}; "
+            "raw and clean rows remain stored, but sentiment_analysis may be stale."
+        ) from error
 
 
 def run_script(
@@ -74,7 +126,10 @@ def main() -> int:
     results: list[tuple[str, bool]] = []
 
     print("SOCIAL MEDIA PIPELINE")
-    print("Collectors run sequentially before cleaning and sentiment analysis.")
+    print(
+        "Collectors run sequentially before shared cleaning, environmental "
+        "filtering, and sentiment analysis."
+    )
 
     for collector in SOCIAL_MEDIA_COLLECTORS:
         results.append(
@@ -89,13 +144,22 @@ def main() -> int:
     results.append((cleaner_name, cleaner_succeeded))
 
     if cleaner_succeeded:
-        results.append(
-            run_script(
-                SENTIMENT_ANALYSIS,
-                "sentiment_analysis.py",
-                ("--run-now",),
-            )
+        environmental_name, environmental_succeeded = run_script(
+            ENVIRONMENTAL_FILTER,
+            "filter_environmental.py",
         )
+        results.append((environmental_name, environmental_succeeded))
+        if environmental_succeeded:
+            results.append(
+                run_script(
+                    SENTIMENT_ANALYSIS,
+                    "sentiment_analysis.py",
+                    ("--run-now",),
+                )
+            )
+        else:
+            print()
+            print("Skipping sentiment_analysis.py because environmental filtering failed.")
     else:
         print()
         print("Skipping sentiment_analysis.py because social cleaning failed.")
