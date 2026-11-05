@@ -303,7 +303,7 @@ def main():
             except Exception as e:
                 print(f"Comments disabled for video: {e}")
 
-    from scripts.supabase.twitter_pipeline import run_cleaner
+    from scripts.social_media_pipeline import run_cleaner
     run_cleaner()
 
 if __name__ == "__main__":

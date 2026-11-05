@@ -17,8 +17,8 @@ The geographic scope is limited to six primary ASEAN countries:
 5. Brunei
 6. Thailand
 
-The collection supports daily recent searches and a larger monthly full-archive run
-without keeping a local `data/` folder.
+Every collection run searches the previous calendar month with X full-archive
+search and does not keep a local `data/` folder.
 
 ## Main Components
 
@@ -45,6 +45,9 @@ Clean posts and comments into clean_posts and clean_comments
     |
     v
 Translate non-English comments during cleaning
+    |
+    v
+Classify unlabelled clean_posts as environmental
     |
     v
 Derive sentiment_analysis
@@ -85,44 +88,17 @@ Important query behavior:
 - The query is no longer hardcoded to a fixed environmental keyword list.
 - Country labels are inferred from author location, post text, or supported place-country values. A post can remain `unspecified` when there is not enough evidence.
 
-## 3. Supabase Checkpointing
+## 3. Collection Date Window
 
-Before a normal collection, the script calls the Supabase REST API for the newest stored post:
+Every collector run uses X full-archive search for the previous calendar
+month. The start is inclusive and the end is exclusive, both in UTC. For
+example, a run on 5 November searches from 1 October 00:00 UTC up to (but not
+including) 1 November 00:00 UTC, covering all of October. The matching
+`monthly_topic_stats` month defaults to that same previous month.
 
-```text
-GET /rest/v1/x_posts
-    ?select=post_id,created_at
-    &order=created_at.desc
-    &limit=1
-```
-
-The returned `post_id` becomes the X API `since_id` value.
-
-This means a normal daily run asks for posts newer than the latest post already stored in Supabase. It avoids repeatedly requesting the same recent posts and reduces unnecessary billed reads.
-
-### First run
-
-If `x_posts` is empty, there is no checkpoint. The script searches the available recent-post window and stores the results.
-
-### Later runs
-
-If Supabase already contains posts, the script uses the newest stored post as the checkpoint:
-
-```text
-X API query + since_id=<latest Supabase post ID>
-```
-
-If no new posts match, the script uploads zero new rows and exits normally.
-
-### Forced run
-
-Passing `--force` ignores the checkpoint and searches recent posts again:
-
-```bash
-python scripts/sources/twitter.py --force
-```
-
-This is useful for recovery or backfilling, but it can cause repeated API reads. Supabase IDs prevent duplicate rows, but the repeated API request may still cost money.
+The collector does not use a Supabase `since_id` checkpoint, because a
+checkpoint from the current month could exclude posts from the prior month.
+Existing post and reply IDs still prevent duplicate rows in Supabase.
 
 ## 4. Default Collection Size
 
@@ -304,7 +280,7 @@ Uploads are sent in batches of 100 rows. This avoids sending one large request a
 
 Repeated data can occur when:
 
-- A forced run ignores the checkpoint.
+- The same month's collection is rerun.
 - The X API returns overlapping results.
 - A reply appears in more than one fetched conversation result.
 - A scheduled job is retried after a partial failure.
@@ -334,59 +310,60 @@ The conflict identifiers are:
 
 Therefore, rerunning the same collection updates the existing row instead of creating a second copy.
 
-Deduplication prevents duplicate storage, but it does not make repeated X API reads free. Avoid `--force` unless it is necessary.
+Deduplication prevents duplicate storage, but it does not make repeated X API reads free.
 
-## 11. Normal Daily Command
+## 11. Normal Collection Command
 
-Run the collector without `--force`:
+Run the collector:
 
 ```bash
 python scripts/sources/twitter.py
 ```
 
-This performs the following sequence:
+This collects data from the previous calendar month and performs the following
+sequence:
 
 1. Estimate the maximum cost.
-2. Read the latest post checkpoint from Supabase.
-3. Search only for newer posts.
-4. Fetch the configured reply sample.
-5. Upsert posts and replies into Supabase.
-7. Exit without creating local data files.
-
-This command is suitable for a daily scheduler such as `cron`, GitHub Actions, or another job runner.
+2. Search the previous month using X full-archive search and that month's
+   topic keywords.
+3. Fetch the configured reply sample.
+4. Upsert posts and replies into Supabase.
+5. Exit without creating local data files.
 
 To force a fresh endpoint call from the pipeline entry point and then run the
-full raw → clean → sentiment flow, run:
+full raw → clean → environmental classification → sentiment flow, run:
 
 ```bash
 python scripts/supabase/twitter_pipeline.py
 ```
 
-The pipeline entry point invokes the collector with `--force`, upserts raw
+The pipeline entry point runs the collector for the previous month, upserts raw
 records to `x_posts` and `x_replies`, runs the cleaner, and then derives
-`sentiment_analysis`. The collector's configured spend cap still applies.
+environmental labels and `sentiment_analysis`. The collector's configured
+spend cap still applies.
 
-## 12. Monthly Job
+## 12. Scheduled Monthly Job
 
-Run the monthly job through the Supabase pipeline on the first day of each month:
+The scheduler-oriented monthly command is available on the first day of each
+month:
 
 ```bash
 python scripts/supabase/twitter_pipeline.py --monthly
 ```
 
-The job:
+It uses the same previous-month collection window as a normal collector run,
+and additionally:
 
 1. Checks that today is the first day of the month.
-2. Calculates the previous calendar month in UTC.
-3. Uses X full-archive search with `start_time` and `end_time` for that month.
-4. Collects up to 200 seed posts.
-5. Samples up to 10 replies from each of the top 5 conversations.
-6. Fetches missing impression counts through individual tweet lookups.
-7. Uploads users, posts, and replies directly to Supabase.
-8. The shared Supabase upload function runs `scripts/cleaning/clean_social.py`,
-    which refreshes `clean_posts` and `clean_comments` from all available raw
-    platform tables, translating non-English comments.
-9. It runs `scripts/sentiment/sentiment_analysis.py --all` to derive
+2. Collects up to 200 seed posts.
+3. Samples up to 10 replies from each of the top 5 conversations.
+4. Fetches missing impression counts through individual tweet lookups.
+5. Uploads users, posts, and replies directly to Supabase.
+6. The shared upload flow runs `scripts/cleaning/clean_social.py` to add only
+   source rows not already present in `clean_posts` or `clean_comments`,
+   translating new non-English comments, then runs
+   `scripts/cleaning/filter_environmental.py` to classify clean posts.
+7. It runs `scripts/sentiment/sentiment_analysis.py --all` to derive
     `sentiment_analysis` from the refreshed clean tables.
 
 The monthly run has a `$5.00` maximum estimate. With user expansions disabled, its configured maximum is 250 post/detail reads, costing `$2.50` at the current rates. This is a large bounded monthly sample, not an unlimited export: obtaining every post from a busy month would require a larger budget and may require X full-archive access.
@@ -422,7 +399,8 @@ For a deliberate one-off run outside the first day, use the explicit override:
 python scripts/supabase/twitter_pipeline.py --monthly --run-now
 ```
 
-X full-archive access is required for the monthly command. If the account does not have that access, X may return `403` even though the daily recent-search command works.
+X full-archive access is required for collection. If the account does not have
+that access, X may return `403`.
 
 The monthly command is run manually; no automatic scheduler is included.
 
@@ -434,13 +412,13 @@ Preview cost without calling the API:
 python scripts/sources/twitter.py --dry-run
 ```
 
-Run a fresh search while ignoring the checkpoint:
+Run collection for the previous month (the default behavior):
 
 ```bash
-python scripts/sources/twitter.py --force
+python scripts/sources/twitter.py
 ```
 
-The default fresh run requests up to 150 posts and samples up to 20 replies
+The default run requests up to 150 posts and samples up to 20 replies
 from each of the 15 highest-reply conversations. Its estimated maximum is
 `$4.50`, under the default `$5.00` spend cap.
 
@@ -473,8 +451,7 @@ Supabase upload failures also stop the job. The data remains in Supabase for bat
 
 The stored sample has the following limitations for downstream analysis:
 
-- X Recent Search only covers the API's available recent-search window.
-- The daily sample is capped and is not a complete census of all public discussion.
+- The monthly sample is capped and is not a complete census of all public discussion.
 - Replies are sampled, not exhaustive; non-English replies are translated
   during cleaning.
 - Country inference is heuristic and can be `unspecified`.
@@ -486,13 +463,14 @@ Report the collection window, sample sizes, country coverage, number of unspecif
 
 ## 16. Current Architecture Summary
 
-The permanent source of truth is Supabase. The daily job does not need the removed `data/` folder, JSON files, or JSONL files.
+The permanent source of truth is Supabase. The collection job does not need the
+removed `data/` folder, JSON files, or JSONL files.
 
 The key design choices are:
 
 - Supabase stores all collected records.
-- Supabase `x_posts` provides the daily checkpoint.
-- X `since_id` reduces overlap between daily searches.
+- Every run is bounded to the previous calendar month.
+- Full-archive search retrieves the requested historical month.
 - Primary-key upserts make retries safe.
 - Cost checks happen before API calls.
 - Replies and users are collected in intentionally small, configurable samples.
@@ -564,24 +542,34 @@ python scripts/cleaning/clean_social.py
 For comments with a known non-English language, the cleaner uses Google Cloud
 Translation to translate the text to English. When a comment has no language
 metadata, Cloud Translation detects its language during translation. Configure
-Google Application Default Credentials for a project with the Cloud Translation
-API enabled before running the cleaner. For local development, authenticate with:
+Google Application Default Credentials (ADC) for a project with the Cloud
+Translation API enabled before running the cleaner. You do not need to set
+`GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_TRANSLATE_API_KEY`. For local
+development, authenticate with:
 
 ```bash
 gcloud auth application-default login
 ```
 
-In deployed environments, provide credentials through the standard Google Cloud
-ADC mechanism, such as `GOOGLE_APPLICATION_CREDENTIALS` pointing to a service
-account credentials file.
+In deployed environments, use the platform's standard Google Cloud identity.
+That identity must be authorized to use Cloud Translation. If translation
+fails after the client is initialized, the cleaner preserves the original
+comment text.
 
-The cleaner is idempotent: rerunning it updates the same `source_id` rows rather
-than creating duplicates. This requires the migration to be applied first.
+The cleaner is incremental by default: it checks candidate `source_id` values
+against the clean tables and processes only missing rows. Existing clean rows
+are not reprocessed on each collection. Use `--full-refresh` only when an
+intentional complete rebuild is required:
+
+```bash
+python scripts/cleaning/clean_social.py --full-refresh
+```
+
+The clean-table migration must be applied before running the cleaner.
 
 Every project upload through the shared Supabase pipeline runs this cleaner
-automatically after the raw upload has succeeded. If a future platform collector
-writes to `reddit_posts` or `reddit_comments` through the same pipeline, those
-rows will be included on that run.
+automatically after the raw upload has succeeded. It inserts only raw rows
+whose normalized IDs are not already present in the clean tables.
 
 Emoji conversion uses the attached `emoji` package's `demojize` function with
 square-bracket delimiters, so compound emoji, skin-tone variants, flags, and

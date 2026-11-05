@@ -142,12 +142,6 @@ NORMALISED_COMMENTS_FILE = (
     DATA_DIR / "facebook_comments_normalised.json"
 )
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-CSV_DIR = DATA_DIR if TEST_MODE else SCRIPT_DIR
-POSTS_CSV = CSV_DIR / "facebook_posts.csv"
-COMMENTS_CSV = CSV_DIR / "facebook_comments.csv"
-
-
 # =========================================================
 # FACEBOOK SOURCES
 # =========================================================
@@ -1756,23 +1750,6 @@ def normalise_facebook_comment(comment):
     }
 
 
-def save_csv(rows, filepath, json_columns=None):
-    """Save normalised rows using the same UTF-8 CSV format as other sources."""
-
-    dataframe = pd.DataFrame(rows)
-
-    for column in json_columns or []:
-        if column in dataframe.columns:
-            dataframe[column] = dataframe[column].apply(
-                lambda value: json.dumps(value, ensure_ascii=False)
-                if isinstance(value, (dict, list))
-                else value
-            )
-
-    dataframe.to_csv(filepath, index=False, encoding="utf-8-sig")
-    print(f"Saved {len(dataframe)} rows to {filepath}")
-
-
 def sync_to_supabase(posts, comments):
     """Sync cleaned Facebook records through the existing pipeline."""
 
@@ -2132,18 +2109,6 @@ if __name__ == "__main__":
         NORMALISED_COMMENTS_FILE
     )
 
-    save_csv(
-        normalised_posts,
-        POSTS_CSV,
-        json_columns=["matched_topics", "matched_keywords"],
-    )
-
-    save_csv(
-        normalised_comments,
-        COMMENTS_CSV,
-        json_columns=["matched_keywords"],
-    )
-
     # =====================================================
     # STEP 7: SUPABASE SYNC
     # =====================================================
@@ -2204,8 +2169,5 @@ if __name__ == "__main__":
         "Comments available:",
         len(comments)
     )
-
-    print("Saved:", POSTS_CSV)
-    print("Saved:", COMMENTS_CSV)
 
     print("\nDone.")

@@ -53,7 +53,7 @@ Scrape up to 20 comments per matched post with `apify/facebook-comments-scraper`
 Apply one cumulative `$20` Apify budget across posts and comments
     |
     v
-Deduplicate, normalise, and save JSON/CSV outputs
+Deduplicate, normalise, and save JSON outputs
     |
     v
 Upsert into `facebook_posts` and `facebook_comments`
@@ -72,18 +72,24 @@ Required variables include:
 APIFY_TOKEN=...
 SUPABASE_URL=...
 SUPABASE_SECRET_KEY=...
-GOOGLE_TRANSLATE_API_KEY=...
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_KEY` are accepted in place of
 `SUPABASE_SECRET_KEY`. The key must be a server-side secret or service-role
 key; publishable and anon keys are rejected.
 
-Google Cloud Translation is needed for post translation in `facebook.py` and
-comment translation in `clean_social.py`. Set either
-`GOOGLE_TRANSLATE_API_KEY` (a Cloud Translation API key) or
-`GOOGLE_APPLICATION_CREDENTIALS` (a service-account JSON file). The API key
-is used when both are set.
+Post translation in `facebook.py` and comment translation in
+`clean_social.py` use Google Cloud Translation. You do not need to set
+`GOOGLE_TRANSLATE_API_KEY` or `GOOGLE_APPLICATION_CREDENTIALS`: the scripts
+use Google Application Default Credentials (ADC) when no translation API key
+is configured. For local runs, authenticate with
+`gcloud auth application-default login`. In a deployed environment, use its
+standard Google Cloud identity. The Cloud Translation API must be enabled for
+the project, and the identity must be authorized to use it.
+
+If translation is unavailable for a batch, the cleaner preserves the original
+text. Posts that need translation may remain untranslated and therefore may
+not match English topic keywords.
 
 The `.env` file must remain private and must not be committed to Git.
 
@@ -268,9 +274,6 @@ Raw and intermediate files are written under `data/raw/`:
 | `facebook_posts_normalised.json` | Final post records |
 | `facebook_comments_normalised.json` | Final comment records |
 
-The final records are also written to `scripts/sources/facebook_posts.csv`
-and `scripts/sources/facebook_comments.csv`.
-
 Each normal run scrapes fresh data and overwrites the raw files.
 
 ## 9. Deduplication and Supabase Storage
@@ -293,8 +296,9 @@ Existing rows are updated rather than inserted as duplicates. Only the
 English `text` is uploaded; `original_text` and `lang` are not columns in
 `facebook_posts`.
 
-After the upload, `run_cleaner()` runs `clean_social.py` to refresh
-`clean_posts` and `clean_comments` for all platforms.
+After the upload, `run_cleaner()` runs `clean_social.py` to add only records
+whose normalized IDs are not already present in `clean_posts` or
+`clean_comments`.
 
 ## 10. Running the Pipeline
 
@@ -327,8 +331,8 @@ runs.
 * A missing `APIFY_TOKEN` stops the run when a scrape is requested.
 * An actor run that fails to start is skipped with a message.
 * A failed translation batch keeps the original text for those posts.
-* A Supabase sync failure is printed with its traceback; local JSON and CSV
-  outputs have already been written by then.
+* A Supabase sync failure is printed with its traceback; local JSON outputs
+  have already been written by then.
 
 ## 12. Stopping a Run
 
