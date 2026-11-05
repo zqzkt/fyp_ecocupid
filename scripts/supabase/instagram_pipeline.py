@@ -169,7 +169,4 @@ def sync_instagram_data(
             session, base_url, key, "instagram_comments", projected_comments, "comment_id"
         ),
     }
-    from scripts.social_media_pipeline import run_cleaner
-
-    run_cleaner()
     return counts

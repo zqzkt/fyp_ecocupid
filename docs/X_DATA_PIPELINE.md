@@ -359,12 +359,18 @@ and additionally:
 3. Samples up to 10 replies from each of the top 5 conversations.
 4. Fetches missing impression counts through individual tweet lookups.
 5. Uploads users, posts, and replies directly to Supabase.
-6. The shared upload flow runs `scripts/cleaning/clean_social.py` to add only
+6. After collection, the pipeline wrapper runs
+   `scripts/cleaning/clean_social.py` to add only
    source rows not already present in `clean_posts` or `clean_comments`,
    translating new non-English comments, then runs
    `scripts/cleaning/filter_environmental.py` to classify clean posts.
 7. It runs `scripts/sentiment/sentiment_analysis.py --all` to derive
     `sentiment_analysis` from the refreshed clean tables.
+
+For a full multi-platform collection, use `python scripts/social_media_pipeline.py`.
+It waits until all five platform collectors finish successfully before running
+the shared cleaner, environmental classifier, and sentiment step. Platform
+collector scripts by themselves only collect and upload raw platform rows.
 
 The monthly run has a `$5.00` maximum estimate. With user expansions disabled, its configured maximum is 250 post/detail reads, costing `$2.50` at the current rates. This is a large bounded monthly sample, not an unlimited export: obtaining every post from a busy month would require a larger budget and may require X full-archive access.
 
@@ -567,9 +573,9 @@ python scripts/cleaning/clean_social.py --full-refresh
 
 The clean-table migration must be applied before running the cleaner.
 
-Every project upload through the shared Supabase pipeline runs this cleaner
-automatically after the raw upload has succeeded. It inserts only raw rows
-whose normalized IDs are not already present in the clean tables.
+The end-to-end social-media pipeline runs the cleaner once after all five raw
+platform collectors succeed. It inserts only raw rows whose normalized IDs
+are not already present in the clean tables.
 
 Emoji conversion uses the attached `emoji` package's `demojize` function with
 square-bracket delimiters, so compound emoji, skin-tone variants, flags, and

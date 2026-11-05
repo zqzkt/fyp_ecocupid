@@ -305,8 +305,4 @@ def sync_facebook_rows(
         )
     )
 
-    from scripts.social_media_pipeline import run_cleaner
-
-    run_cleaner()
-
     return counts

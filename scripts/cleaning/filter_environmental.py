@@ -10,14 +10,29 @@ from supabase import create_client, Client
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 load_dotenv(os.path.join(project_root, '.env'), override=True)
-gemini_client = genai.Client()
+gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+if not gemini_api_key:
+    raise SystemExit("GEMINI_API_KEY or GOOGLE_API_KEY is required for environmental classification.")
+gemini_client = genai.Client(api_key=gemini_api_key)
 
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Supabase setup
 url = os.environ.get("SUPABASE_URL", "")
-key = os.environ.get("SUPABASE_KEY", "")
+key = (
+    os.environ.get("SUPABASE_SECRET_KEY")
+    or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    or os.environ.get("SUPABASE_KEY")
+    or ""
+).strip()
+if not url or not key:
+    raise SystemExit("SUPABASE_URL and a server-side Supabase key are required.")
+if key.startswith(("sb_publishable_", "sb_anon_")):
+    raise SystemExit(
+        "Environmental classification requires SUPABASE_SECRET_KEY or "
+        "SUPABASE_SERVICE_ROLE_KEY; SUPABASE_KEY must not be publishable/anon."
+    )
 
 supabase: Client = create_client(url, key)
 
@@ -144,10 +159,16 @@ def main():
     # Posts with no text cannot be judged, so mark them as not environmental without a Gemini call
     empty_ids = [p['id'] for p in posts if not (p.get('cleaned_text') or '').strip()]
     posts = [p for p in posts if (p.get('cleaned_text') or '').strip()]
-    save_labels(supabase, empty_ids, False)
+    empty_written = save_labels(supabase, empty_ids, False)
+    if empty_written < len(empty_ids):
+        raise SystemExit(
+            f"Only {empty_written}/{len(empty_ids)} empty posts were labeled false. "
+            "Check Supabase update policies and retry."
+        )
 
     environmental_total = 0
     written_total = 0
+    failed_batches = 0
     for start in range(0, len(posts), BATCH_SIZE):
         batch = posts[start:start + BATCH_SIZE]
         environmental_ids = classify_batch(batch)
@@ -155,20 +176,31 @@ def main():
         # Leave the batch unclassified (null) so the next run retries it
         if environmental_ids is None:
             print(f"Skipping posts {start + 1}-{start + len(batch)}: classification failed.")
+            failed_batches += 1
             continue
 
         other_ids = [p['id'] for p in batch if p['id'] not in environmental_ids]
         written = save_labels(supabase, list(environmental_ids), True) + save_labels(supabase, other_ids, False)
-
         # RLS can silently block a write, returning no rows instead of raising
         if written < len(batch):
-            print(f"Only {written}/{len(batch)} rows written for posts {start + 1}-{start + len(batch)}: check RLS update policies on 'clean_posts'.")
+            print(
+                f"Only {written}/{len(batch)} rows written for posts "
+                f"{start + 1}-{start + len(batch)}: check Supabase update "
+                "policies and retry remaining null rows."
+            )
+            failed_batches += 1
 
         environmental_total += len(environmental_ids)
         written_total += written
         print(f"Posts {start + 1}-{start + len(batch)}: {len(environmental_ids)} environmental.")
 
-    print(f"Done. {environmental_total} environmental post(s); {written_total} row(s) updated, plus {len(empty_ids)} empty post(s) marked not environmental.")
+    print(f"Done. {environmental_total} environmental post(s); {written_total} row(s) updated, plus {empty_written} empty post(s) marked not environmental.")
+    if failed_batches:
+        raise SystemExit(
+            f"Environmental classification incomplete: {failed_batches} batch(es) "
+            "failed or were not fully written. Run the pipeline again to retry "
+            "remaining null rows."
+        )
 
 if __name__ == "__main__":
     main()

@@ -403,49 +403,40 @@ def _sync_supabase(posts: list[dict], comments: list[dict]) -> None:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(repo_root / ".env")
+    from dotenv import load_dotenv
+    load_dotenv(repo_root / ".env")
 
-        url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
-        key = (
-            os.environ.get("SUPABASE_SECRET_KEY")
-            or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-            or os.environ.get("SUPABASE_KEY")
-            or ""
-        ).strip()
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = (
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or ""
+    ).strip()
 
-        if not url or not key:
-            print("✗ Missing SUPABASE_URL or Supabase server key in .env")
-            return
+    if not url or not key:
+        raise SystemExit("SUPABASE_URL and a server-side Supabase key are required.")
 
-        if key.startswith("sb_publishable_") or key.startswith("sb_anon_"):
-            print("✗ Supabase key must be a server-only secret/service-role key")
-            return
+    if key.startswith(("sb_publishable_", "sb_anon_")):
+        raise SystemExit("Instagram upload requires a server-side Supabase key.")
 
-        from scripts.supabase.instagram_pipeline import sync_instagram_data
-        print("Syncing to Supabase...")
+    from scripts.supabase.instagram_pipeline import sync_instagram_data
+    print("Syncing to Supabase...")
 
-        posts_dict = (
-            pd.DataFrame(posts)
-            .where(pd.notna(pd.DataFrame(posts)), None)
-            .to_dict("records")
-        )
-        comments_dict = (
-            pd.DataFrame(comments)
-            .where(pd.notna(pd.DataFrame(comments)), None)
-            .to_dict("records")
-        )
+    posts_dict = (
+        pd.DataFrame(posts)
+        .where(pd.notna(pd.DataFrame(posts)), None)
+        .to_dict("records")
+    )
+    comments_dict = (
+        pd.DataFrame(comments)
+        .where(pd.notna(pd.DataFrame(comments)), None)
+        .to_dict("records")
+    )
 
-        counts = sync_instagram_data(posts_dict, comments_dict)
-        print("✓ Supabase sync successful")
-        print(f"Upserted: {counts}")
-    except ImportError as error:
-        print(f"✗ Import error: {error}")
-    except Exception as error:
-        print(f"✗ Supabase sync failed: {error}")
-        import traceback
-        traceback.print_exc()
+    counts = sync_instagram_data(posts_dict, comments_dict)
+    print("✓ Supabase sync successful")
+    print(f"Upserted: {counts}")
 
 
 _sync_supabase(posts_df.to_dict("records"), comments_df.to_dict("records"))

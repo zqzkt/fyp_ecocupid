@@ -296,17 +296,22 @@ Existing rows are updated rather than inserted as duplicates. Only the
 English `text` is uploaded; `original_text` and `lang` are not columns in
 `facebook_posts`.
 
-After the upload, `run_cleaner()` runs `clean_social.py` to add only records
-whose normalized IDs are not already present in `clean_posts` or
-`clean_comments`.
+The Facebook collector uploads only to the raw Facebook tables. Run
+`python scripts/social_media_pipeline.py` for the end-to-end multi-platform
+flow; after all collectors finish successfully, it runs `clean_social.py` to
+add only records whose normalized IDs are not already present in `clean_posts`
+or `clean_comments`, then classifies unlabelled posts with
+`filter_environmental.py`.
 
 ## 10. Running the Pipeline
 
-Normal run:
+Run the end-to-end social-media pipeline:
 
 ```bash
-python scripts/sources/facebook.py
+python scripts/social_media_pipeline.py
 ```
+
+To collect Facebook raw data only, run `python scripts/sources/facebook.py`.
 
 Offline test against existing local caches, with no Apify, Google
 Translation for uncached posts, or Supabase calls:

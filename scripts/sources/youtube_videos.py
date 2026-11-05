@@ -185,8 +185,17 @@ def main():
     load_dotenv()
 
     # Supabase setup
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = (
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or ""
+    ).strip()
+    if not url or not key:
+        raise SystemExit("SUPABASE_URL and a server-side Supabase key are required.")
+    if key.startswith(("sb_publishable_", "sb_anon_")):
+        raise SystemExit("YouTube upload requires a server-side Supabase key.")
 
     supabase: Client = create_client(url, key)
 
@@ -263,48 +272,42 @@ def main():
 
 
         # Insert videos into Supabase
-        try:
-            database_response = (
-                supabase
-                .table("youtube_videos")
-                .upsert(
-                    video_records,
-                    on_conflict="video_id"
-                )
-                .execute()
+        database_response = (
+            supabase
+            .table("youtube_videos")
+            .upsert(
+                video_records,
+                on_conflict="video_id"
             )
+            .execute()
+        )
 
-            print(
-                f"Successfully inserted "
-                f"{len(database_response.data)} records"
-            )
-
-        except Exception as e:
-            print(f"Error inserting data: {e}")
+        print(
+            f"Successfully inserted "
+            f"{len(database_response.data)} records"
+        )
 
         for video in video_records:
             try:
                 request = youtube.commentThreads().list(
-                part="id,snippet,replies",
-                videoId=video['video_id']
+                    part="id,snippet,replies",
+                    videoId=video['video_id'],
                 )
-                
                 comments = request.execute()
-                formatted_comments = format_comments(comments, video.get("country"))
-                if not formatted_comments:
-                    print("No comments to insert.")
-                else:
-                    try:
-                        # Insert comments
-                        response = supabase.table("youtube_comments").upsert(formatted_comments, on_conflict="comment_id").execute()
-                        print(f"Successfully uploaded {len(response.data)} comments.")
-                    except Exception as e:
-                        print(f"Error occurred when inserting into comments table: {e}")
             except Exception as e:
                 print(f"Comments disabled for video: {e}")
+                continue
 
-    from scripts.social_media_pipeline import run_cleaner
-    run_cleaner()
+            formatted_comments = format_comments(comments, video.get("country"))
+            if not formatted_comments:
+                print("No comments to insert.")
+                continue
+
+            response = supabase.table("youtube_comments").upsert(
+                formatted_comments,
+                on_conflict="comment_id",
+            ).execute()
+            print(f"Successfully uploaded {len(response.data)} comments.")
 
 if __name__ == "__main__":
     main()
