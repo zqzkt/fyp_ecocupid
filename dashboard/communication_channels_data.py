@@ -18,6 +18,8 @@ load_dotenv(os.path.join(REPO_ROOT, ".env"))
 
 PAGE_SIZE = 1000
 REQUEST_TIMEOUT = 60
+# clean_posts filter: only posts Gemini flagged as environmental (scripts/cleaning/filter_environmental.py)
+ENVIRONMENTAL_ONLY = {"is_environmental": "eq.true"}
 COUNTRY_ALIASES = {
     "BN": "Brunei",
     "Brunei": "Brunei",
@@ -57,7 +59,10 @@ def _headers(key: str) -> dict[str, str]:
     return {"apikey": key, "Authorization": f"Bearer {key}"}
 
 
-def _load_table(table: str, columns: str = "*") -> pd.DataFrame:
+def _load_table(
+    table: str, columns: str = "*", filters: dict[str, str] | None = None
+) -> pd.DataFrame:
+    """Load a whole table; filters are PostgREST params, e.g. {"is_environmental": "eq.true"}."""
     base_url, key = _credentials()
     rows: list[dict[str, Any]] = []
     offset = 0
@@ -69,6 +74,7 @@ def _load_table(table: str, columns: str = "*") -> pd.DataFrame:
                 "select": columns,
                 "limit": str(PAGE_SIZE),
                 "offset": str(offset),
+                **(filters or {}),
             },
             headers=_headers(key),
             timeout=REQUEST_TIMEOUT,
@@ -95,7 +101,7 @@ def _load_table(table: str, columns: str = "*") -> pd.DataFrame:
 def load_framework_data() -> dict[str, pd.DataFrame]:
     """Load the cleaned posts and comments used by this page."""
     return {
-        "posts": _load_table("clean_posts"),
+        "posts": _load_table("clean_posts", filters=ENVIRONMENTAL_ONLY),
         "comments": _load_table("clean_comments"),
     }
 

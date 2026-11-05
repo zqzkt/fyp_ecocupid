@@ -1,7 +1,6 @@
 import os
 import json
 import sys
-import youtube_comments
 import googleapiclient.discovery
 from supabase import create_client, Client
 from dotenv import load_dotenv

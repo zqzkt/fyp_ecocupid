@@ -60,6 +60,7 @@ CLEAN_COLUMNS = (
     "impression_count",
     "total_engagement",
     "source_table",
+    "post_url",
     "cleaned_at",
 )
 
@@ -360,6 +361,20 @@ def source_id(row: dict[str, Any], platform: str, source_type: str) -> str | Non
     return f"{platform}:{source_type}:{value}" if value else None
 
 
+def post_url(row: dict[str, Any], platform: str) -> str | None:
+    """Use the stored link when the source has one, otherwise build it from the id."""
+    url = first(row, "post_url", "url", "postUrl", "permalink")
+    if url:
+        return str(url)
+    if platform == "youtube" and row.get("video_id"):
+        return f"https://www.youtube.com/watch?v={row['video_id']}"
+    if platform == "x":
+        tweet_id = first(row, "post_id", "tweet_id", "id")
+        if tweet_id:
+            return f"https://x.com/i/status/{tweet_id}"
+    return None
+
+
 def posted_at(row: dict[str, Any], source_type: str, platform: str = "") -> str | None:
     """Normalize the source post/comment timestamp for timestamptz columns."""
     timestamp_keys = (
@@ -519,6 +534,9 @@ def normalize_row(
         "source_table": source_table,
         "cleaned_at": datetime.now(timezone.utc).isoformat(),
     }
+    if source_type == "post":
+        # clean_comments has no post_url column, so only posts carry it
+        normalized["post_url"] = post_url(row, platform)
     if source_type == "comment":
         normalized["parent_posted_at"] = first(row, "parent_posted_at")
         if platform == "youtube":

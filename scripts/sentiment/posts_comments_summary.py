@@ -4,6 +4,7 @@ import pandas as pd
 import json
 import sys
 import argparse
+import time
 from dotenv import load_dotenv
 from google import genai
 from supabase import create_client, Client
@@ -25,6 +26,9 @@ supabase: Client = create_client(url, key)
 
 with open('../sources/locations.json', "r") as locations_file:
     COUNTRIES = json.load(locations_file)
+
+# Attempts per Gemini call before giving up on a topic
+GEMINI_RETRIES = 5
 
 def get_previous_month():
     """
@@ -59,14 +63,14 @@ def normalize_month(month_str):
 
 def get_existing_summaries(supabase, month):
     """
-    Returns a set of (country, keywords) pairs that already have a summary for the given month.
+    Returns a set of (country, topic_name) pairs that already have a summary for the given month.
     """
-    response = supabase.table("summary").select("country, keywords").eq("month", month).execute()
-    return {(row["country"], row["keywords"]) for row in response.data}
+    response = supabase.table("summary").select("country, topic_name").eq("month", month).execute()
+    return {(row["country"], row["topic_name"]) for row in response.data}
 
 def get_monthly_keywords(supabase, country, month):
     # keywords = []
-    response = supabase.table("monthly_topic_stats").select("monthly_keywords").eq("country", country).lte("topic_rank", 3).eq("month", month).execute()
+    response = supabase.table("monthly_topic_stats").select("topic_name, monthly_keywords").eq("country", country).lte("topic_rank", 3).eq("month", month).execute()
     list_of_keywords = response.data
     # keywords = [kw.strip()
     #     for item in list_of_keywords
@@ -90,6 +94,7 @@ def fetch_posts_by_country_keyword(supabase, countries, keywords, month):
     # 3. Fetch data using list and timestamp filters
     response = supabase.table('clean_posts') \
         .select('cleaned_text') \
+        .eq('is_environmental', True) \
         .in_('inferred_country', countries) \
         .overlaps('matched_keywords', keywords) \
         .gte('posted_at', start_timestamp) \
@@ -137,15 +142,23 @@ def generate_discussion_summary(sample_texts, keywords):
     Comments: {combined_comments}
     """
     
-    try:
-        response = gemini_client.models.generate_content(
-            model='gemini-3.1-flash-lite',
-            contents=prompt,
-        )
-        return response.text
-    except Exception as e:
-        print(f"Error generating summary: {e}")
-        return "Summary could not be generated."
+    # Gemini returns 503/429 under high demand, so retry with exponential backoff
+    for attempt in range(1, GEMINI_RETRIES + 1):
+        try:
+            response = gemini_client.models.generate_content(
+                model='gemini-3.1-flash-lite',
+                contents=prompt,
+            )
+            return response.text
+        except Exception as e:
+            retryable = any(code in str(e) for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED"))
+            if retryable and attempt < GEMINI_RETRIES:
+                wait = 2 ** attempt * 5
+                print(f"Gemini busy (attempt {attempt}/{GEMINI_RETRIES}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            print(f"Error generating summary: {e}")
+            return None
 
 
 def parse_args():
@@ -176,14 +189,15 @@ def summarize_month(month, force=False):
         list_of_keywords = get_monthly_keywords(supabase, country, month)
 
         for row in list_of_keywords:
+            topic_name = row.get("topic_name")
             keyword_string = row.get("monthly_keywords", "")
             keywords_list = [kw.strip() for kw in keyword_string.split(",") if kw.strip()]
 
             if not keywords_list:
                 continue
 
-            if (country, keyword_string) in existing:
-                print(f"Skipping {country} [{keyword_string}] for {month}: summary already exists.")
+            if (country, topic_name) in existing:
+                print(f"Skipping {country} [{topic_name}] for {month}: summary already exists.")
                 continue
 
             comments_data = fetch_comments_by_country_keyword(
@@ -199,8 +213,14 @@ def summarize_month(month, force=False):
                 sample_texts = [item.get('cleaned_text', '') for item in combined_data if item.get('cleaned_text')]
                 
                 if sample_texts:
-                    summary_text = generate_discussion_summary(sample_texts, keywords_list)# Convert the string from Gemini into a real Python dictionary
-                
+                    summary_text = generate_discussion_summary(sample_texts, keywords_list)
+
+                    # Don't store a placeholder when Gemini failed; the next run will retry this topic
+                    if summary_text is None:
+                        print(f"Skipping {country} [{topic_name}] for {month}: no summary generated.")
+                        continue
+
+                    # Convert the string from Gemini into a real Python dictionary
                     try:
                         summary_dict = json.loads(summary_text)
                     except json.JSONDecodeError:
@@ -212,13 +232,17 @@ def summarize_month(month, force=False):
                             .table("summary")
                             .upsert(
                                 # Store the string version of the keywords in the DB
-                                {'country': country, 'keywords': keyword_string, 'month': month, 'summary': summary_dict},
-                                on_conflict="country, keywords, month"
+                                {'country': country, 'topic_name': topic_name, 'keywords': keyword_string, 'month': month, 'summary': summary_dict},
+                                on_conflict="topic_name,country,month"
                             )
                             .execute()
                         )
             
-                        print(f"Successfully inserted {len(database_response.data)} records")
+                        # RLS can silently block a write, returning no rows instead of raising
+                        if database_response.data:
+                            print(f"Successfully inserted {len(database_response.data)} records")
+                        else:
+                            print(f"No rows written for {country} [{topic_name}] {month}: check RLS insert/update policies on 'summary'.")
             
                     except Exception as e:
                         print(f"Error inserting data: {e}")
