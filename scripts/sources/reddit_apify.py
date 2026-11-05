@@ -72,53 +72,96 @@ print(f"Generated {len(start_urls)} search URLs")
 client = ApifyClient(APIFY_TOKEN)
 
 result_items = []
-run_input = {
-    "startUrls": [{"url": request["url"]} for request in start_urls],
-    "fastMode": False,
-    "maxCommunitiesCount": 1,
-    "crawlCommentsPerPost": True,
-    "postedAfter": posted_after,
-    "postedBefore": posted_before,
-    "proxy": {
-        "useApifyProxy": True,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+country_requests = {}
+for request in start_urls:
+    country_requests.setdefault(request["country"], []).append(request)
+
+country_budget = APIFY_BUDGET_USD / Decimal(len(country_requests))
+total_spent_usd = Decimal("0")
+failed_countries = []
+
+for country, requests_for_country in country_requests.items():
+    run_input = {
+        "startUrls": [{"url": request["url"]} for request in requests_for_country],
+        "fastMode": False,
+        "maxCommunitiesCount": 1,
+        "crawlCommentsPerPost": True,
+        "postedAfter": posted_after,
+        "postedBefore": posted_before,
     }
-}
+    search_requests_by_url = {
+        request["url"]: request
+        for request in requests_for_country
+    }
 
-print(f"Starting one Reddit actor run for {len(start_urls)} search URLs...")
-run = client.actor("harshmaur/reddit-scraper").call(
-    run_input=run_input,
-    max_total_charge_usd=APIFY_BUDGET_USD,
-)
+    print(
+        f"Starting Reddit actor run for {country} "
+        f"({len(requests_for_country)} search URLs, "
+        f"${country_budget:.2f} budget)..."
+    )
+    try:
+        run = client.actor("harshmaur/reddit-scraper").call(
+            run_input=run_input,
+            max_total_charge_usd=country_budget,
+        )
+        run = client.run(run.id).get() or run
+    except Exception as error:
+        failed_countries.append((country, str(error)))
+        print(f"Reddit actor failed for {country}: {error}")
+        continue
 
-# Refresh the completed run so usage_total_usd reflects the final Apify charge.
-run = client.run(run.id).get() or run
-spent_usd = Decimal(str(run.usage_total_usd or 0))
+    spent_usd = Decimal(str(getattr(run, "usage_total_usd", 0) or 0))
+    total_spent_usd += spent_usd
+    print(
+        f"Reddit Apify usage for {country}: ${spent_usd:.2f} / "
+        f"${country_budget:.2f}"
+    )
+
+    run_status = str(getattr(run, "status", "") or "")
+    dataset_id = getattr(run, "default_dataset_id", None)
+    if not dataset_id:
+        error_message = (
+            getattr(run, "status_message", None)
+            or run_status
+            or "no dataset was returned"
+        )
+        failed_countries.append((country, error_message))
+        print(f"Reddit actor did not return a dataset for {country}: {error_message}")
+        continue
+
+    if run_status != "SUCCEEDED":
+        print(
+            f"Reddit actor status for {country}: {run_status}; "
+            "processing results already delivered by the actor"
+        )
+
+    for item in client.dataset(dataset_id).iterate_items():
+        source_url = (
+            item.get("searchUrl")
+            or item.get("sourceUrl")
+            or item.get("startUrl")
+        )
+        search_request = search_requests_by_url.get(source_url)
+        if search_request is None:
+            search_request = {"topic": None, "country": country}
+        result_items.append((
+            item,
+            search_request["topic"],
+            search_request["country"],
+        ))
+
+    print(f"Actor completed for {country}")
+
 print(
-    f"Reddit Apify usage: ${spent_usd:.2f} / "
+    f"Reddit Apify usage total: ${total_spent_usd:.2f} / "
     f"${APIFY_BUDGET_USD:.2f}"
 )
-
-search_requests_by_url = {
-    request["url"]: request
-    for request in start_urls
-}
-for item in client.dataset(run.default_dataset_id).iterate_items():
-    source_url = (
-        item.get("searchUrl")
-        or item.get("sourceUrl")
-        or item.get("startUrl")
-    )
-    search_request = search_requests_by_url.get(source_url)
-    if search_request is None:
-        search_request = {"topic": None, "country": None}
-    result_items.append((
-        item,
-        search_request["topic"],
-        search_request["country"],
-    ))
-
-print("Actor completed")
+if failed_countries:
+    print("Countries with failed Reddit runs:")
+    for country, error_message in failed_countries:
+        print(f"- {country}: {error_message}")
+if not result_items:
+    raise RuntimeError("All Reddit actor runs failed; no results were collected.")
 
 # =====================================================
 # EXTRACT DATA
