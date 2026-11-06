@@ -401,7 +401,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Collect EcoInsights X data and upsert it directly into Supabase."
     )
-    parser.add_argument("--max-posts", type=int, default=150, help="New posts to fetch. Min billed page is 10.")
+    parser.add_argument("--max-posts", type=int, default=250, help="New posts to fetch. Min billed page is 10.")
     parser.add_argument("--max-spend", type=float, default=DEFAULT_MAX_SPEND_USD, help="Abort if estimate exceeds this USD.")
     parser.add_argument(
         "--with-replies",
@@ -420,13 +420,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-reply-conversations",
         type=int,
-        default=15,
+        default=20,
         help="Conversations to sample for replies; highest reply counts are selected.",
     )
     parser.add_argument(
         "--max-replies-per-post",
         type=int,
-        default=20,
+        default=12,
         help="Maximum replies to fetch per selected conversation.",
     )
     parser.add_argument("--force", action="store_true", help="Deprecated compatibility flag; ignored.")

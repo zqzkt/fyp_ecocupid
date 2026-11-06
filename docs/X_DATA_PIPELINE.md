@@ -106,9 +106,9 @@ The defaults collect a broader sample while keeping the estimated maximum below 
 
 | Setting | Default |
 | --- | ---: |
-| New seed posts | 150 |
-| Reply conversations | 15 |
-| Replies per conversation | 20 |
+| New seed posts | 250 |
+| Reply conversations | 20 |
+| Replies per conversation | 12 |
 | Maximum seed posts hard cap | 250 |
 | User expansions | Disabled; `x_users` is not written |
 | Reply collection | Enabled |
@@ -137,9 +137,9 @@ estimated cost = post reads * $0.005 + detail reads * $0.005
 With the defaults:
 
 ```text
-150 seed posts + (15 conversations * 20 replies) = 450 post reads
-450 post reads + 450 detail reads
-(450 * $0.005) + (450 * $0.005) = $4.50
+250 seed posts + (20 conversations * 12 replies) = 490 post reads
+490 post reads + 490 detail reads
+(490 * $0.005) + (490 * $0.005) = $4.90
 ```
 
 The script refuses to call the API if the estimate exceeds `--max-spend`.
