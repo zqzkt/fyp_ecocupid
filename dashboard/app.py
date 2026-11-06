@@ -4,6 +4,7 @@ Run from the repo root with:
 streamlit run dashboard/app.py
 """
 
+import pandas as pd
 import streamlit as st
 
 from filters import (
@@ -115,6 +116,12 @@ elif page == sentiment_analysis_page:
 
     # Sentiment Analysis uses its own month and multi-country filters.
     pass
+
+elif page == data_page:
+
+    st.session_state["data_months"] = sorted(
+        pd.to_datetime(df["month"].dropna().unique())
+    )
 
 elif page != communication_channels_page:
 

@@ -2,12 +2,13 @@
 
 import subprocess
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from previous_month_data import DashboardDataError, load_previous_month_data
+from previous_month_data import DashboardDataError, load_month_data
 from style import kpi_card
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -110,9 +111,35 @@ def _show_table_export(
 
 st.title("Data")
 st.caption(
-    "Collect and inspect records for the previous calendar month. "
-    "Exports include the complete matching Supabase dataset."
+    "Browse collected records by month. Collection buttons always target "
+    "the previous calendar month."
 )
+
+today = date.today()
+previous_month_start = (
+    today.replace(day=1) - timedelta(days=1)
+).replace(day=1)
+available_months = st.session_state.get("data_months", [])
+year_options = sorted(
+    {pd.Timestamp(month).year for month in available_months}
+    | {previous_month_start.year, today.year},
+    reverse=True,
+)
+default_year_index = year_options.index(previous_month_start.year)
+selected_year = st.sidebar.selectbox(
+    "Year",
+    year_options,
+    index=default_year_index,
+    key="data_year",
+)
+selected_month = st.sidebar.selectbox(
+    "Month",
+    options=range(1, 13),
+    index=previous_month_start.month - 1,
+    format_func=lambda month: date(2000, month, 1).strftime("%B"),
+    key="data_month",
+)
+selected_month_start = date(selected_year, selected_month, 1)
 
 data_error = None
 try:
@@ -122,24 +149,27 @@ try:
         social_summary,
         news_tables,
         social_tables,
-    ) = load_previous_month_data()
+        previous_news_collected,
+        previous_social_collected,
+    ) = load_month_data(selected_month_start)
 except DashboardDataError as error:
     data_error = error
-    month_start = None
+    month_start = selected_month_start
     news_summary = pd.DataFrame()
     social_summary = pd.DataFrame()
     news_tables = {"news_cleaned": pd.DataFrame()}
     social_tables = {table: pd.DataFrame() for _, table in SOCIAL_TABLES}
+    previous_news_collected = False
+    previous_social_collected = False
 
-month_suffix = (
-    f" · {month_start:%B %Y}" if month_start is not None else ""
+month_suffix = f" · {month_start:%B %Y}"
+social_data_available = any(
+    not dataframe.empty for dataframe in social_tables.values()
 )
-news_already_collected = not news_tables["news_cleaned"].empty
-social_already_collected = not social_tables["clean_posts"].empty
 cannot_check = data_error is not None
 news_help = (
     "Previous-month news data is already in Supabase."
-    if news_already_collected
+    if previous_news_collected
     else (
         "Could not check Supabase. Resolve the data access error before "
         "running collection."
@@ -150,7 +180,7 @@ news_help = (
 social_help = (
     "Previous-month social media data is already in Supabase. "
     "Social collection buttons are disabled."
-    if social_already_collected
+    if previous_social_collected
     else (
         "Could not check Supabase. Resolve the data access error before "
         "running collection."
@@ -160,7 +190,9 @@ social_help = (
 )
 
 with st.container(border=True):
-    st.subheader(f"Collect previous month's data{month_suffix}")
+    st.subheader(
+        f"Collect previous month's data · {previous_month_start:%B %Y}"
+    )
     st.caption(
         "Collection may take several minutes and use paid API credits."
     )
@@ -171,7 +203,7 @@ with st.container(border=True):
             key="run_news_collection",
             type="primary",
             width="stretch",
-            disabled=news_already_collected or cannot_check,
+            disabled=previous_news_collected or cannot_check,
             help=news_help,
         ):
             run_collection("News collection", NEWS_PIPELINE)
@@ -182,7 +214,7 @@ with st.container(border=True):
             key="run_all_social_collections",
             type="primary",
             width="stretch",
-            disabled=social_already_collected or cannot_check,
+            disabled=previous_social_collected or cannot_check,
             help=social_help,
         ):
             run_collection("Social media collection", SOCIAL_PIPELINE)
@@ -203,7 +235,7 @@ with st.container(border=True):
                 f"Run {platform_name}",
                 key=f"run_{platform_id}_collection",
                 width="stretch",
-                disabled=social_already_collected or cannot_check,
+                disabled=previous_social_collected or cannot_check,
                 help=social_help,
             ):
                 run_collection(
@@ -214,7 +246,7 @@ with st.container(border=True):
                 st.rerun()
 
 if data_error is not None:
-    st.error(f"Could not load previous month's data. {data_error}")
+    st.error(f"Could not load data for {month_start:%B %Y}. {data_error}")
 else:
     month_label = month_start.strftime("%B %Y")
     st.header(f"Collected data{month_suffix}")
@@ -225,7 +257,6 @@ else:
         if news_records.empty:
             st.info(f"No news records found in Supabase for {month_label}.")
         else:
-            st.success(f"News data collected for {month_label}.")
             topic_count = int(news_summary["topic_count"].sum())
             topic_assignments = int(
                 news_summary["topic_article_assignments"].sum()
@@ -264,9 +295,7 @@ else:
 
     with st.container(border=True):
         st.subheader("Social media")
-        if social_already_collected:
-            st.success(f"Social media data collected for {month_label}.")
-        else:
+        if not social_data_available:
             st.info(
                 f"No social media records found in Supabase for {month_label}."
             )
