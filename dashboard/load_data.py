@@ -72,7 +72,6 @@ TOPIC_REGISTRY_COLUMNS = (
     "updated_at",
 )
 
-
 class DashboardDataError(RuntimeError):
     """Raised when the dashboard cannot load its data from Supabase."""
 
