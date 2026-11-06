@@ -137,14 +137,8 @@ def main() -> int:
     ]
     results.extend(collector_results)
 
-    collectors_succeeded = all(succeeded for _, succeeded in collector_results)
-    if collectors_succeeded:
-        cleaner_name, cleaner_succeeded = run_script(CLEANER, "clean_social.py")
-        results.append((cleaner_name, cleaner_succeeded))
-    else:
-        cleaner_succeeded = False
-        print()
-        print("Skipping shared cleaning because one or more collectors failed.")
+    cleaner_name, cleaner_succeeded = run_script(CLEANER, "clean_social.py")
+    results.append((cleaner_name, cleaner_succeeded))
 
     if cleaner_succeeded:
         environmental_name, environmental_succeeded = run_script(
@@ -165,10 +159,7 @@ def main() -> int:
             print("Skipping sentiment_analysis.py because environmental filtering failed.")
     else:
         print()
-        if collectors_succeeded:
-            print("Skipping environmental filtering and sentiment because social cleaning failed.")
-        else:
-            print("Skipping shared cleaning, environmental filtering, and sentiment.")
+        print("Skipping environmental filtering and sentiment because social cleaning failed.")
 
     print_summary(results)
     return 0 if all(succeeded for _, succeeded in results) else 1

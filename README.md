@@ -112,10 +112,11 @@ order:
 7. Environmental filtering
 8. Sentiment analysis
 
-The pipeline continues to the other collectors if a collector fails, then
-skips the processing stages unless every collector succeeds. It runs shared
-cleaning once, then environmental classification, then sentiment. Sentiment runs only
-after environmental classification succeeds. It passes `--run-now` so sentiment can be computed
+The pipeline continues to the next collector if one fails and reports failures
+in its summary. It runs shared cleaning once after all collectors, even if one
+or more collectors failed. Environmental classification runs only if cleaning
+succeeds, and sentiment runs only after classification succeeds. It passes
+`--run-now` so sentiment can be computed
 when the pipeline is run on a day other than the first of the month. The
 pipeline prints a step-by-step summary and exits with a nonzero status if a
 step fails.
