@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,13 @@ SOCIAL_MEDIA_COLLECTORS = (
     "twitter.py",
     "youtube_videos.py",
 )
+COLLECTOR_BY_PLATFORM = {
+    "facebook": "facebook.py",
+    "instagram": "instagram_apify.py",
+    "reddit": "reddit_apify.py",
+    "x": "twitter.py",
+    "youtube": "youtube_videos.py",
+}
 CLEANER = REPO_ROOT / "scripts" / "cleaning" / "clean_social.py"
 SENTIMENT_ANALYSIS = (
     REPO_ROOT / "scripts" / "sentiment" / "sentiment_analysis.py"
@@ -122,7 +130,7 @@ def print_summary(results: list[tuple[str, bool]]) -> None:
     print("=" * 70)
 
 
-def main() -> int:
+def main(platform: str | None = None) -> int:
     results: list[tuple[str, bool]] = []
 
     print("SOCIAL MEDIA PIPELINE")
@@ -131,9 +139,14 @@ def main() -> int:
         "filtering, and sentiment analysis."
     )
 
+    collectors = (
+        (COLLECTOR_BY_PLATFORM[platform],)
+        if platform is not None
+        else SOCIAL_MEDIA_COLLECTORS
+    )
     collector_results = [
         run_script(SOURCES_DIR / collector, collector)
-        for collector in SOCIAL_MEDIA_COLLECTORS
+        for collector in collectors
     ]
     results.extend(collector_results)
 
@@ -166,4 +179,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(
+        description="Collect social-media data and run shared processing."
+    )
+    parser.add_argument(
+        "--platform",
+        choices=tuple(COLLECTOR_BY_PLATFORM),
+        help="Collect one platform, then run shared cleaning, filtering, and sentiment.",
+    )
+    args = parser.parse_args()
+    raise SystemExit(main(platform=args.platform))
