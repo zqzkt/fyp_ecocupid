@@ -150,7 +150,7 @@ try:
         news_tables,
         social_tables,
         previous_news_collected,
-        previous_social_collected,
+        previous_social_platforms,
     ) = load_month_data(selected_month_start)
 except DashboardDataError as error:
     data_error = error
@@ -160,7 +160,7 @@ except DashboardDataError as error:
     news_tables = {"news_cleaned": pd.DataFrame()}
     social_tables = {table: pd.DataFrame() for _, table in SOCIAL_TABLES}
     previous_news_collected = False
-    previous_social_collected = False
+    previous_social_platforms = set()
 
 month_suffix = f" · {month_start:%B %Y}"
 social_data_available = any(
@@ -180,7 +180,7 @@ news_help = (
 social_help = (
     "Previous-month social media data is already in Supabase. "
     "Social collection buttons are disabled."
-    if previous_social_collected
+    if len(previous_social_platforms) == len(SOCIAL_PLATFORMS)
     else (
         "Could not check Supabase. Resolve the data access error before "
         "running collection."
@@ -214,7 +214,7 @@ with st.container(border=True):
             key="run_all_social_collections",
             type="primary",
             width="stretch",
-            disabled=previous_social_collected or cannot_check,
+            disabled=bool(previous_social_platforms) or cannot_check,
             help=social_help,
         ):
             run_collection("Social media collection", SOCIAL_PIPELINE)
@@ -235,8 +235,12 @@ with st.container(border=True):
                 f"Run {platform_name}",
                 key=f"run_{platform_id}_collection",
                 width="stretch",
-                disabled=previous_social_collected or cannot_check,
-                help=social_help,
+                disabled=platform_id in previous_social_platforms or cannot_check,
+                help=(
+                    f"Previous-month {platform_name} data is already in Supabase."
+                    if platform_id in previous_social_platforms
+                    else f"Collect {platform_name} data for the previous month."
+                ),
             ):
                 run_collection(
                     f"{platform_name} collection and processing",

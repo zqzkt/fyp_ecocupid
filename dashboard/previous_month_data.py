@@ -119,7 +119,7 @@ def load_month_data(month_start: date) -> tuple[
     dict[str, pd.DataFrame],
     dict[str, pd.DataFrame],
     bool,
-    bool,
+    set[str],
 ]:
     """Return summaries and full table records for a selected calendar month."""
     if month_start.day != 1:
@@ -192,7 +192,13 @@ def load_month_data(month_start: date) -> tuple[
     ).replace(day=1)
     if month_start == collection_month_start:
         previous_news_exists = bool(news_data_rows)
-        previous_social_exists = not social_tables["clean_posts"].empty
+        previous_social_platforms = {
+            str(platform).casefold()
+            for platform in social_tables["clean_posts"]
+            .get("platform", pd.Series(dtype=str))
+            .dropna()
+            .unique()
+        }
     else:
         previous_month_start_time = datetime.combine(
             collection_month_start,
@@ -218,20 +224,24 @@ def load_month_data(month_start: date) -> tuple[
             },
             max_rows=1,
         ))
-        previous_social_exists = bool(_fetch_rows(
-            base_url,
-            key,
-            "clean_posts",
-            {
-                "select": "id",
-                "and": (
-                    "(posted_at.gte."
-                    f"{previous_month_start_time},posted_at.lt."
-                    f"{previous_month_end_time})"
-                ),
-            },
-            max_rows=1,
-        ))
+        previous_social_platforms = set()
+        for platform in PLATFORMS:
+            if _fetch_rows(
+                base_url,
+                key,
+                "clean_posts",
+                {
+                    "select": "id",
+                    "platform": f"eq.{platform}",
+                    "and": (
+                        "(posted_at.gte."
+                        f"{previous_month_start_time},posted_at.lt."
+                        f"{previous_month_end_time})"
+                    ),
+                },
+                max_rows=1,
+            ):
+                previous_social_platforms.add(platform)
 
     youtube_video_rows = social_tables["youtube_videos"]
     if not youtube_video_rows.empty and "video_id" in youtube_video_rows:
@@ -340,5 +350,5 @@ def load_month_data(month_start: date) -> tuple[
         {"news_cleaned": pd.DataFrame(news_data_rows)},
         social_tables,
         previous_news_exists,
-        previous_social_exists,
+        previous_social_platforms,
     )
