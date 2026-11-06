@@ -54,13 +54,16 @@ def _fetch_rows(
     key: str,
     table: str,
     params: dict[str, str],
+    *,
+    max_rows: int | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
+        page_size = min(PAGE_SIZE, max_rows - len(rows)) if max_rows else PAGE_SIZE
         page_params = {
             **params,
-            "limit": str(PAGE_SIZE),
+            "limit": str(page_size),
             "offset": str(offset),
         }
         endpoint = f"{base_url}/rest/v1/{table}"
@@ -100,38 +103,45 @@ def _fetch_rows(
             ) from exc
 
         rows.extend(page)
-        if len(page) < PAGE_SIZE:
+        if (max_rows and len(rows) >= max_rows) or len(page) < page_size:
             return rows
         offset += len(page)
 
 
 @st.cache_data(
     ttl=60,
-    show_spinner="Loading previous month's collected data...",
+    show_spinner="Loading selected month's collected data...",
 )
-def load_previous_month_data() -> tuple[
+def load_month_data(month_start: date) -> tuple[
     date,
     pd.DataFrame,
     pd.DataFrame,
     dict[str, pd.DataFrame],
+    dict[str, pd.DataFrame],
+    bool,
+    set[str],
 ]:
-    """Return previous-month summaries and full collected table records."""
-    today = date.today()
-    current_month_start = today.replace(day=1)
-    month_start = (current_month_start - timedelta(days=1)).replace(day=1)
+    """Return summaries and full table records for a selected calendar month."""
+    if month_start.day != 1:
+        raise ValueError("month_start must be the first day of a month.")
+
+    month_after_start = (
+        month_start.replace(day=28) + timedelta(days=4)
+    ).replace(day=1)
     start_time = datetime.combine(
         month_start,
         time.min,
         tzinfo=timezone.utc,
     ).isoformat()
     end_time = datetime.combine(
-        current_month_start,
+        month_after_start,
         time.min,
         tzinfo=timezone.utc,
     ).isoformat()
 
     base_url, key = _credentials()
     month = month_start.isoformat()
+    news_filter = f"(published_at.gte.{start_time},published_at.lt.{end_time})"
     news_rows = _fetch_rows(
         base_url,
         key,
@@ -148,7 +158,7 @@ def load_previous_month_data() -> tuple[
         "news_cleaned",
         {
             "select": "*",
-            "and": f"(published_at.gte.{start_time},published_at.lt.{end_time})",
+            "and": news_filter,
         },
     )
     social_tables: dict[str, pd.DataFrame] = {}
@@ -158,7 +168,7 @@ def load_previous_month_data() -> tuple[
             continue
         timestamp_column = SOCIAL_TABLE_DATE_COLUMNS[table]
         period_start, period_end = (
-            (month_start.isoformat(), current_month_start.isoformat())
+            (month_start.isoformat(), month_after_start.isoformat())
             if timestamp_column == "published_date"
             else (start_time, end_time)
         )
@@ -175,6 +185,63 @@ def load_previous_month_data() -> tuple[
             },
         )
         social_tables[table] = pd.DataFrame(rows)
+
+    current_month_start = date.today().replace(day=1)
+    collection_month_start = (
+        current_month_start - timedelta(days=1)
+    ).replace(day=1)
+    if month_start == collection_month_start:
+        previous_news_exists = bool(news_data_rows)
+        previous_social_platforms = {
+            str(platform).casefold()
+            for platform in social_tables["clean_posts"]
+            .get("platform", pd.Series(dtype=str))
+            .dropna()
+            .unique()
+        }
+    else:
+        previous_month_start_time = datetime.combine(
+            collection_month_start,
+            time.min,
+            tzinfo=timezone.utc,
+        ).isoformat()
+        previous_month_end_time = datetime.combine(
+            current_month_start,
+            time.min,
+            tzinfo=timezone.utc,
+        ).isoformat()
+        previous_news_exists = bool(_fetch_rows(
+            base_url,
+            key,
+            "news_cleaned",
+            {
+                "select": "article_id",
+                "and": (
+                    "(published_at.gte."
+                    f"{previous_month_start_time},published_at.lt."
+                    f"{previous_month_end_time})"
+                ),
+            },
+            max_rows=1,
+        ))
+        previous_social_platforms = set()
+        for platform in PLATFORMS:
+            if _fetch_rows(
+                base_url,
+                key,
+                "clean_posts",
+                {
+                    "select": "id",
+                    "platform": f"eq.{platform}",
+                    "and": (
+                        "(posted_at.gte."
+                        f"{previous_month_start_time},posted_at.lt."
+                        f"{previous_month_end_time})"
+                    ),
+                },
+                max_rows=1,
+            ):
+                previous_social_platforms.add(platform)
 
     youtube_video_rows = social_tables["youtube_videos"]
     if not youtube_video_rows.empty and "video_id" in youtube_video_rows:
@@ -282,4 +349,6 @@ def load_previous_month_data() -> tuple[
         social_summary,
         {"news_cleaned": pd.DataFrame(news_data_rows)},
         social_tables,
+        previous_news_exists,
+        previous_social_platforms,
     )
