@@ -22,7 +22,53 @@ st.set_page_config(
 
 apply_style()
 
+st.markdown("""
+<style>
+/* Target Streamlit navigation page labels directly */
+[data-testid="stSidebarNav"] a span,
+[data-testid="stSidebarNav"] a span[data-testid="stSidebarNavLinkLabel"],
+[data-testid="stSidebarNav"] a [data-testid="stSidebarNavLinkLabel"],
+[data-testid="stSidebarNav"] a p {
+    white-space: normal !important;
+    text-overflow: unset !important;
+    overflow: visible !important;
+    overflow-wrap: break-word !important;
+    word-break: normal !important;
+    display: block !important;
+    max-width: 100% !important;
+}
 
+/* Allow navigation links to expand in height */
+[data-testid="stSidebarNav"] a {
+    height: auto !important;
+    min-height: 2.5rem !important;
+    overflow: visible !important;
+}
+
+/* Override truncation on nested page-label containers */
+[data-testid="stSidebarNav"] a > div,
+[data-testid="stSidebarNav"] a > div > div {
+    min-width: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    white-space: normal !important;
+}
+
+/* Allow section headings to wrap */
+[data-testid="stSidebarNav"] [data-testid="stNavSectionHeader"],
+[data-testid="stSidebarNav"] [data-testid="stNavSectionHeader"] * {
+    white-space: normal !important;
+    text-overflow: unset !important;
+    overflow: visible !important;
+    overflow-wrap: break-word !important;
+}
+
+/* Ensure navigation items can grow vertically */
+[data-testid="stSidebarNav"] li {
+    height: auto !important;
+}
+</style>
+""", unsafe_allow_html=True)
 # =====================================================================
 # LOAD MAIN DASHBOARD DATA
 # =====================================================================
@@ -42,18 +88,18 @@ if df.empty:
 
 overview_page = st.Page(
     "views/overview.py",
-    title="Overview",
+    title="Coverage Overview",
     default=True,
 )
 
 country_opportunity_page = st.Page(
     "views/country_opportunity.py",
-    title="Country Opportunity Explorer",
+    title="Country-Specific Explorer",
 )
 
 engagement_comparison_page = st.Page(
     "views/engagement_comparison.py",
-    title="Engagement Comparison",
+    title="Engagement Metrics Overview",
 )
 
 data_page = st.Page(
@@ -61,14 +107,9 @@ data_page = st.Page(
     title="Data",
 )
 
-communication_channels_page = st.Page(
-    "views/communication_channels.py",
-    title="Communication Channels",
-)
-
-communication_insights_page = st.Page(
-    "views/communication_insights.py",
-    title="Communication Insights",
+communication_framework_page = st.Page(
+    "views/communication_framework.py",
+    title="Communication Framework",
 )
 
 sentiment_analysis_page = st.Page(
@@ -78,15 +119,20 @@ sentiment_analysis_page = st.Page(
 
 
 page = st.navigation(
-    [
-        overview_page,
-        country_opportunity_page,
-        engagement_comparison_page,
-        data_page,
-        communication_channels_page,
-        communication_insights_page,
-        sentiment_analysis_page,
-    ]
+    {
+        "News": [
+            overview_page,
+            country_opportunity_page,
+        ],
+        "Social Media": [
+            engagement_comparison_page,
+            sentiment_analysis_page,
+            communication_framework_page,
+        ],
+        "Raw Data": [
+            data_page,
+        ],
+    }
 )
 
 
@@ -106,10 +152,9 @@ elif page == engagement_comparison_page:
     # inside engagement_comparison.py.
     pass
 
-elif page == communication_insights_page:
+elif page == communication_framework_page:
 
-    # Communication Insights uses its own single-country filters
-    # inside communication_insights.py.
+    # Communication Framework has its own country and month filters.
     pass
 
 elif page == sentiment_analysis_page:
@@ -123,16 +168,8 @@ elif page == data_page:
         pd.to_datetime(df["month"].dropna().unique())
     )
 
-elif page != communication_channels_page:
-
-    st.session_state["filters"] = (
-        sidebar_filters(df)
-    )
-
 else:
 
-    st.session_state["filters"] = (
-        sidebar_filters(df)
-    )
-    
+    st.session_state["filters"] = sidebar_filters(df)
+
 page.run()
