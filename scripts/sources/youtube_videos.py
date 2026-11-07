@@ -18,13 +18,21 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 def get_monthly_keywords(supabase, country):
-    keywords = []
+    # Returns one list of keywords per topic, so each topic can be searched in a single combined query
     response = supabase.table("monthly_topic_stats").select("monthly_keywords").eq("country", country).lte("topic_rank", 3).execute()
-    list_of_keywords = response.data
-    keywords = [kw.strip()
-        for item in list_of_keywords
-        for kw in item['monthly_keywords'].split(',')]
-    return keywords
+    keyword_groups = []
+    for item in response.data:
+        group = [kw.strip() for kw in item['monthly_keywords'].split(',') if kw.strip()]
+        if group:
+            keyword_groups.append(group)
+    return keyword_groups
+
+def match_keywords(item, keywords):
+    # A combined "a|b|c" query doesn't say which keyword matched, so infer it from the title/description
+    snippet = item.get("snippet", {})
+    text = f"{snippet.get('title', '')} {snippet.get('description', '')}".casefold()
+    matched = [kw for kw in keywords if kw.casefold() in text]
+    return matched or keywords
 
 def get_previous_month_start():
     now = datetime.now()
@@ -43,7 +51,7 @@ def get_current_month_start():
     now = datetime.now()
     return f"{now.year:04d}-{now.month:02d}-01T00:00:00Z"
 
-def format_records(youtube_data, country, token, keyword):
+def format_records(youtube_data, country, token, keywords):
     formatted_records = []
 
     # Parse and map the JSON
@@ -58,7 +66,7 @@ def format_records(youtube_data, country, token, keyword):
             "published_date": snippet.get("publishedAt")[:10],
             "country": country,
             "next_page_token": token,
-            "topic": keyword
+            "topic": match_keywords(item, keywords)
         }
 
         formatted_records.append(record)
@@ -70,15 +78,17 @@ def format_records(youtube_data, country, token, keyword):
     return formatted_records
 
 
-def fetch_videos(youtube, country, country_code, keywords, location, location_radius):
+def fetch_videos(youtube, country, country_code, keyword_groups, location, location_radius):
     """
     Fetch videos from YouTube based on a country's location.
+    Each keyword group is searched as one OR query ("a|b|c") to save quota (100 units per search call).
     Returns a list of formatted video records.
     """
 
     all_records = []
-    next_page_token = None
-    for keyword in keywords:
+    for keywords in keyword_groups:
+        query = "|".join(keywords)
+        next_page_token = None
         while True:
             request = youtube.search().list(
                 part="snippet",
@@ -88,7 +98,7 @@ def fetch_videos(youtube, country, country_code, keywords, location, location_ra
                 maxResults=50,
                 publishedAfter=get_previous_month_start(),
                 publishedBefore=get_current_month_start(),
-                q=keyword,
+                q=query,
                 regionCode=country_code,
                 relevanceLanguage="en",
                 type="video"
@@ -97,7 +107,7 @@ def fetch_videos(youtube, country, country_code, keywords, location, location_ra
             response = request.execute()
 
             print(
-                f"Got {len(response.get('items', []))} videos. "
+                f"[{country}] q={query!r}: got {len(response.get('items', []))} videos. "
                 f"Next token: {response.get('nextPageToken')}"
             )
 
@@ -107,7 +117,7 @@ def fetch_videos(youtube, country, country_code, keywords, location, location_ra
                 response,
                 country,
                 next_page_token,
-                keyword
+                keywords
             )
 
             if formatted_records:
@@ -117,7 +127,7 @@ def fetch_videos(youtube, country, country_code, keywords, location, location_ra
             if not next_page_token:
                 break
 
-            break # Test - will only collect 1 page of results / keyword / country
+            break # Test - will only collect 1 page of results / topic / country
     return all_records
 
 
@@ -214,29 +224,28 @@ def main():
         location = location_data["location"]
         country_code = location_data["regionCode"]
         location_radius = location_data["locationRadius"]
-        keywords = get_monthly_keywords(supabase, country)
+        keyword_groups = get_monthly_keywords(supabase, country)
         video_records = fetch_videos(
             youtube,
             country,
             country_code,
-            keywords,
+            keyword_groups,
             location,
             location_radius
         )
 
-        # Deduplicate records and aggregate topics into a list
+        # Deduplicate records and merge their keyword lists
         deduplicated_records = {}
         for record in video_records:
             vid = record["video_id"]
-            current_topic = record["topic"]
-            
+
             if vid not in deduplicated_records:
-                record["topic"] = [current_topic]
                 deduplicated_records[vid] = record
             else:
-                # Video already exists, append the new topic if it's not already in the list
-                if current_topic not in deduplicated_records[vid]["topic"]:
-                    deduplicated_records[vid]["topic"].append(current_topic)
+                # Video already exists, append any new keywords to its list
+                for kw in record["topic"]:
+                    if kw not in deduplicated_records[vid]["topic"]:
+                        deduplicated_records[vid]["topic"].append(kw)
                     
         video_records = list(deduplicated_records.values())
 

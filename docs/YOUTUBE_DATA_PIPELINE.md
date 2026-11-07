@@ -87,7 +87,10 @@ Instead of a static list of terms, the pipeline dynamically generates its search
  .
 
 
-* It splits the comma-separated `monthly_keywords` into a flat list of search terms to use against the YouTube API.
+* It splits each topic's comma-separated `monthly_keywords` into a keyword group, and searches each group as a single OR query (e.g. `q="flood|haze|recycling"`). Since every `search.list` call costs 100 quota units regardless of `maxResults`, this makes one search call per topic instead of one per keyword.
+
+
+* Because an OR query does not report which keyword matched, each video's `topic` is set to the group's keywords that appear in its title or description (case-insensitive), falling back to the whole group if none appear.
 
 
 
@@ -116,7 +119,7 @@ The pipeline is currently configured with strict limits on data retrieval:
 * **Video Search:** The API requests a maximum of 50 results per page (`maxResults=50`) which is the maximum as the YouTube API dictates.
 
 
-* **Pagination Cap:** While the script is designed to handle a `nextPageToken`, a hardcoded `break` statement currently limits the collection to only one page of results per keyword, per country, to reduce the use of quota in the testing stage.
+* **Pagination Cap:** While the script is designed to handle a `nextPageToken`, a hardcoded `break` statement currently limits the collection to only one page of results per topic, per country, to reduce the use of quota in the testing stage.
 
 
 * **Video Stats Batching:** When requesting metrics (views, likes, comments), the script groups video IDs into batches of 50 to minimize API calls.
@@ -177,7 +180,7 @@ Comment threads extract data from the `snippet.topLevelComment` payload. The sch
 
 The pipeline relies on Supabase `upsert` functionality to safely handle repeated data and overlap.
 
-* **In-Memory Video Deduplication:** Because a single video might match multiple keywords, the video script deduplicates records via a Python dictionary before uploading. If a video is found multiple times, the script appends the new keyword to the existing `topic` list rather than creating a duplicate entry.
+* **In-Memory Video Deduplication:** Because a single video might be returned by multiple topic queries, the video script deduplicates records via a Python dictionary before uploading. If a video is found multiple times, the script merges any new keywords into the existing `topic` list rather than creating a duplicate entry.
 
 
 * **Video Upsert:** Videos are inserted into the `youtube_videos` table using `on_conflict="video_id"`.
