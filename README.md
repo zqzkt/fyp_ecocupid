@@ -227,16 +227,21 @@ month. It exits with a nonzero status if a step fails.
 
 ### Typical cost and time per run
 
-| Item | Typical figure |
-| --- | --- |
-| Google Cloud Translation | About US$90 per run |
-| X API | About US$2 to 3 per run |
-| Reddit collection time | Around 2 hours |
-| Supabase | Free plan |
+| Item | Typical figure per run | Notes |
+| --- | --- | --- |
+| Google Cloud Translation | About US$90 | Largest single cost |
+| Facebook (Apify) | About US$10 | Cap in code: US$20 |
+| Instagram (Apify) | About US$12 | Cap in code: US$12 |
+| Reddit (Apify) | About US$12 | Cap in code: US$12 |
+| X API | About US$4 | Estimated cap in code: US$5 |
+| YouTube Data API | Free | May become paid in future |
+| Gemini | Free | Within the free-tier quota. Model availability is not guaranteed, so a run may fail depending on when it is made |
+| Supabase | Free | Free plan |
+| **Total** | **About US$128** | |
+| Reddit collection time | Around 2 hours | |
 
-Spending caps in the code: Facebook US$20, Instagram US$12, Reddit US$12 (all
-Apify), and X with an estimated US$5 limit. Check the Apify, Gemini and Google
-Cloud consoles for current spend.
+Check the Apify, Google Cloud, X and Gemini consoles for current spend and
+quota before each run.
 
 ## Run the dashboard
 
