@@ -7,6 +7,11 @@ results produced by topic_based_analysis.py from Supabase. Does not call Gemini.
 from __future__ import annotations
 
 import sys
+import ast
+import json
+import html
+import re
+from urllib.parse import urlsplit, parse_qs
 from pathlib import Path
 
 import pandas as pd
@@ -41,6 +46,20 @@ st.markdown("""<style>
 .ec-name {font-size:1.65rem;color:#164a32;font-weight:800;margin-top:8px}
 .ec-note {background:#f4f0e3;border-radius:10px;padding:12px 16px;border-left:4px solid #90aa87}
 .ec-tip {background:#eaf3e7;border-radius:10px;padding:12px 15px;border:1px solid #d5e7d1}
+
+.ec-report-header {background:#edf4e9;border:1px solid #d5e4d2;border-radius:14px;padding:22px 25px;margin:12px 0 18px}
+.ec-report-kicker {font-size:.76rem;font-weight:750;letter-spacing:.11em;color:#597360;text-transform:uppercase}
+.ec-report-title {font-size:1.55rem;font-weight:800;color:#214b35;margin:7px 0}
+.ec-report-meta {font-size:.92rem;color:#53685a}
+.ec-report-section {font-size:1.1rem;font-weight:750;color:#214b35;margin:24px 0 10px}
+.ec-report-key {background:#e8f3e7;border-left:5px solid #2a784f;padding:17px 20px;border-radius:10px;margin:10px 0}
+.ec-report-key-label {color:#56725c;font-size:.78rem;font-weight:750;letter-spacing:.07em}
+.ec-report-key-text {font-size:1.13rem;font-weight:700;color:#214b35;margin-top:7px;line-height:1.5}
+.ec-report-step {display:flex;align-items:flex-start;gap:18px;padding:13px 6px;border-bottom:1px solid #d7dfd0}
+.ec-report-step:last-child {border-bottom:none}
+.ec-report-step-title {flex:0 0 100px;box-sizing:border-box;text-align:center;background:#e3f0e3;border-radius:10px;padding:13px 8px;font-size:1rem;font-weight:750;color:#236a47}
+.ec-report-step-text {flex:1;font-size:.96rem;color:#38483c;line-height:1.6;padding-top:9px;white-space:pre-wrap}
+.ec-report-warning {background:#f5f2e8;border-left:4px solid #a3a278;padding:13px 17px;border-radius:8px}
 </style>""", unsafe_allow_html=True)
 
 
@@ -111,57 +130,336 @@ def _guidance_rows(
     )
 
 
-def _show_guidance(record: pd.Series) -> None:
-    fields = [
-        ("Messaging tone & style", ["tone_and_emotion", "key_message"]),
-        ("Content structure", ["narrative_method", "content_type", "story_structure"]),
-        ("Hooks & CTAs", ["hooks", "call_to_action", "captions"]),
-        ("Specific recommendations", ["recommendations", "what_not_to_do"]),
+# ============================================================
+# EXAMPLE SOURCE POST HELPERS
+# ============================================================
+
+def _post_url_key(value) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+
+    try:
+        parts = urlsplit(value.strip())
+
+        host = (parts.hostname or "").lower()
+        host = host.removeprefix("www.")
+        host = host.removeprefix("m.")
+
+        path = parts.path.rstrip("/")
+        query = parse_qs(parts.query)
+
+        if host in ("youtube.com", "music.youtube.com"):
+            if path == "/watch":
+                video_id = query.get("v", [""])[0]
+                return f"youtube:{video_id}" if video_id else ""
+
+            if path.startswith(("/shorts/", "/live/", "/embed/")):
+                video_id = path.split("/")[2]
+                return f"youtube:{video_id}"
+
+        if host == "youtu.be":
+            video_id = path.strip("/")
+            return f"youtube:{video_id}" if video_id else ""
+
+        if host in ("x.com", "twitter.com"):
+            segments = path.split("/")
+            if "status" in segments:
+                idx = segments.index("status")
+                if idx + 1 < len(segments):
+                    return f"x:{segments[idx + 1]}"
+
+        if host == "instagram.com":
+            segments = path.strip("/").split("/")
+            if len(segments) >= 2 and segments[0] in ("p", "reel", "tv"):
+                return f"instagram:{segments[1]}"
+
+        if host.endswith("tiktok.com"):
+            if "/video/" in path:
+                return f"tiktok:{path.split('/video/')[-1]}"
+
+        return f"{host}{path}"
+
+    except (ValueError, IndexError):
+        return ""
+
+
+def _example_links(value) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        items = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            items = json.loads(value)
+        except (ValueError, TypeError):
+            try:
+                items = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                items = []
+    else:
+        items = []
+    return [str(x).strip() for x in items
+            if isinstance(x, str) and x.strip().startswith(("https://", "http://"))]
+
+
+def _local_topic_post_count(record: pd.Series, selected_country: str,
+                            posts: pd.DataFrame, monthly_topics: pd.DataFrame) -> int | None:
+    """Reconstruct the HOW generator's local keyword/date filter (MIN_POSTS=20).
+
+    This is a current-data estimate, not saved historical batch provenance.
+    """
+    required_posts = {"inferred_country", "posted_at", "matched_keywords", "is_environmental"}
+    required_topics = {"country", "month", "topic_name", "monthly_keywords"}
+    if not required_posts.issubset(posts.columns) or not required_topics.issubset(monthly_topics.columns):
+        return None
+    month = pd.Timestamp(record["_month"]).to_period("M")
+    topic_rows = monthly_topics.loc[
+        monthly_topics["country"].map(normalize_country).eq(selected_country)
+        & pd.to_datetime(monthly_topics["month"], errors="coerce", utc=True)
+            .dt.tz_localize(None).dt.to_period("M").eq(month)
+        & monthly_topics["topic_name"].astype(str).str.casefold()
+            .eq(str(record["topic_name"]).casefold())
     ]
+    if topic_rows.empty:
+        return None
+    # The batch generator splits monthly_keywords on commas and uses
+    # Supabase's array-overlap operation against matched_keywords.
+    keywords = set()
+    for value in topic_rows["monthly_keywords"].dropna():
+        if isinstance(value, str):
+            keywords.update(k.strip() for k in value.split(",") if k.strip())
+        elif isinstance(value, (list, tuple)):
+            keywords.update(str(k).strip() for k in value if str(k).strip())
+    if not keywords:
+        return None
+    dates = pd.to_datetime(posts["posted_at"], errors="coerce", utc=True)
+    within_month = dates.dt.tz_localize(None).dt.to_period("M").eq(month)
+    local = posts["inferred_country"].map(normalize_country).eq(selected_country)
+    environmental = posts["is_environmental"].astype(str).str.lower().isin(("true", "1", "t"))
 
-    labels = {
-        "tone_and_emotion": "Tone and emotion",
-        "key_message": "Key message",
-        "narrative_method": "Narrative approach",
-        "content_type": "Content type",
-        "story_structure": "Story structure",
-        "hooks": "Hooks",
-        "call_to_action": "Call to action",
-        "captions": "Captions",
-        "recommendations": "Recommendations",
-        "what_not_to_do": "Avoid",
-    }
+    def has_keyword(value) -> bool:
+        if isinstance(value, (list, tuple, set)):
+            return bool(set(map(str, value)) & keywords)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return isinstance(parsed, list) and bool(set(map(str, parsed)) & keywords)
+            except (ValueError, TypeError):
+                return False
+        return False
 
-    cols = st.columns(4, gap="small")
+    matched = posts["matched_keywords"].map(has_keyword)
+    return int((within_month & local & environmental & matched).sum())
 
-    for col, (heading, keys) in zip(cols, fields):
-        with col:
-            with st.container(border=True):
-                st.markdown(f"**{heading}**")
 
-                for key in keys:
-                    value = _safe(record.get(key), "")
+def _example_country_map(posts: pd.DataFrame) -> dict[str, str | None]:
+    if posts.empty or not {"post_url", "inferred_country"}.issubset(posts.columns):
+        return {}
+    result = {}
+    for url, country in zip(posts["post_url"], posts["inferred_country"]):
+        key = _post_url_key(url)
+        if key:
+            normalized = normalize_country(country)
+            if key not in result or result[key] is None:
+                result[key] = normalized if normalized in COUNTRIES else None
+    return result
 
-                    if value:
-                        st.markdown(f"**{labels[key]}**")
-                        st.write(value)
 
-    links = []
+# ============================================================
+# DISPLAY HOW GUIDANCE
+# ============================================================
 
-    for field in ("top_post_links", "bottom_post_links"):
-        value = record.get(field)
+def _report_items(value) -> list[str]:
+    """Render Supabase JSON arrays as individual readable suggestions."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        values = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw or raw.casefold() in ("none", "null", "nan"):
+            return []
+        if raw.startswith("["):
+            try:
+                values = json.loads(raw)
+            except (ValueError, TypeError):
+                try:
+                    values = ast.literal_eval(raw)
+                except (ValueError, SyntaxError):
+                    values = [raw]
+        else:
+            values = [raw]
+    else:
+        values = [value]
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    return [str(item).strip() for item in values if str(item).strip()]
 
-        if isinstance(value, list):
-            links.extend(
-                str(link)
-                for link in value
-                if str(link).startswith(("https://", "http://"))
+
+def _report_field(record: pd.Series, key: str, label: str) -> None:
+    items = _report_items(record.get(key))
+    if not items:
+        return
+    st.markdown(f"**{label}**")
+    if len(items) == 1:
+        st.write(items[0])
+    else:
+        for item in items:
+            st.markdown(f"- {item}")
+
+
+
+# Split only when a comma or semicolon introduces the NEXT timed stage.
+# A regular comma inside a description is left untouched.
+_STORY_BOUNDARY = re.compile(
+    r"\s*[;,]\s*(?=(?:\d{1,3}\s*[-–—]\s*\d{1,3}\s*(?:s|sec|seconds)?\s*:))",
+    re.IGNORECASE,
+)
+_STORY_TIME = re.compile(
+    r"^\s*(\d{1,3}\s*[-–—]\s*\d{1,3}\s*(?:s|sec|seconds)?)\s*:\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _story_steps(value) -> list[str]:
+    """Split semicolon stages and comma-separated timed stages safely."""
+    stages = []
+    for item in _report_items(value):
+        # First split at semicolons; then split comma-separated timed stages.
+        for section in item.split(";"):
+            for stage in _STORY_BOUNDARY.split(section):
+                if stage.strip():
+                    stages.append(stage.strip())
+    return stages
+
+
+def _story_stage_parts(step: str, index: int) -> tuple[str, str]:
+    """Return (time label, description), preserving original Gemini wording."""
+    match = _STORY_TIME.match(step)
+    if match:
+        label = re.sub(r"\s*[-–—]\s*", "–", match.group(1).strip())
+        return label, match.group(2).strip()
+    return f"Stage {index}", step.strip()
+
+
+def _show_guidance(record: pd.Series, selected_country: str,
+                   posts: pd.DataFrame, monthly_topics: pd.DataFrame) -> None:
+    """Five-section report; WHERE and Why These Channels remain unchanged."""
+    topic = html.escape(str(record.get("topic_name") or "Environmental topic"))
+    country = html.escape(selected_country)
+    month = pd.Timestamp(record["_month"]).strftime("%B %Y")
+
+    st.html(
+        '<div class="ec-report-header">'
+        '<div class="ec-report-kicker">EcoCupid / Communication Framework</div>'
+        '<div class="ec-report-title">Messaging Strategy Report</div>'
+        f'<div class="ec-report-meta">{country} · {html.escape(month)} · {topic}</div>'
+        '</div>'
+    )
+
+    # 01: The core message and desired delivery style.
+    st.markdown('<div class="ec-report-section">01 / Communication Objective</div>',
+                unsafe_allow_html=True)
+    key_message = _safe(record.get("key_message"), "")
+    if key_message:
+        st.html(
+            '<div class="ec-report-key">'
+            '<div class="ec-report-key-label">KEY MESSAGE</div>'
+            f'<div class="ec-report-key-text">{html.escape(key_message)}</div>'
+            '</div>'
+        )
+    _report_field(record, "tone_and_emotion", "Recommended tone and emotion")
+
+    st.divider()
+    # 02: Production guidance, followed by a step-by-step storyline.
+    st.markdown('<div class="ec-report-section">02 / Content & Storytelling Strategy</div>',
+                unsafe_allow_html=True)
+    left, right = st.columns(2, gap="medium")
+    with left:
+        with st.container(border=True):
+            _report_field(record, "content_type", "Content format")
+    with right:
+        with st.container(border=True):
+            _report_field(record, "narrative_method", "Narrative approach")
+
+    
+    steps = _story_steps(record.get("story_structure"))
+
+    if steps:
+        st.markdown("**Suggested video structure**")
+
+        for i, step in enumerate(steps, 1):
+
+            timestamp, description = _story_stage_parts(step, i)
+
+            st.html(
+                '<div class="ec-report-step">'
+                f'<div class="ec-report-step-title">{html.escape(timestamp.strip())}</div>'
+                f'<div class="ec-report-step-text">{html.escape(description.strip())}</div>'
+                '</div>'
             )
 
+
+    st.divider()
+    # 03: Copyable examples and instructions for posting.
+    st.markdown('<div class="ec-report-section">03 / Ready-to-Use Messaging</div>',
+                unsafe_allow_html=True)
+    hooks = _report_items(record.get("hooks"))
+    if hooks:
+        st.markdown("**Suggested opening hooks**")
+        for i, hook in enumerate(hooks, 1):
+            st.markdown(f"**{i}.** {hook}")
+    _report_field(record, "call_to_action", "Call to action")
+    _report_field(record, "captions", "Caption guidance")
+
+    st.divider()
+    # 04: Practical do's and don'ts.
+    st.markdown('<div class="ec-report-section">04 / Actionable Recommendations</div>',
+                unsafe_allow_html=True)
+    recommendations = _report_items(record.get("recommendations"))
+    if recommendations:
+        for item in recommendations:
+            st.markdown(f"- ✅ {item}")
+    avoid = _report_items(record.get("what_not_to_do"))
+    if avoid:
+        with st.container(border=True):
+            st.markdown("**What to avoid**")
+            for item in avoid:
+                st.write(item)
+
+    st.divider()
+    # 05: Existing country-attributed example links and conditional disclaimer.
+    st.markdown('<div class="ec-report-section">05 / Supporting Source Posts</div>',
+                unsafe_allow_html=True)
+    st.caption("Posts that informed the saved messaging analysis. Country labels are based on the collected data.")
+    links = []
+    for field in ("top_post_links", "bottom_post_links"):
+        links.extend(_example_links(record.get(field)))
+    links = list(dict.fromkeys(links))[:10]
+
     if links:
-        with st.expander("Example source posts"):
-            for i, link in enumerate(links[:10], start=1):
-                st.markdown(f"[{i}. View source post]({link})")
+        countries_by_url = _example_country_map(posts)
+        local_count = _local_topic_post_count(record, selected_country, posts, monthly_topics)
+        with st.expander(f"Example source posts ({len(links)})", expanded=False):
+            if local_count is not None and local_count < 20:
+                st.info(
+                    f"**Limited local data:** Only {local_count} relevant posts "
+                    f"were found for this topic in {selected_country} during "
+                    f"{record['_month']:%B %Y} (minimum: 20). "
+                    "The messaging analysis may therefore use relevant posts "
+                    "from other ASEAN countries. Regional examples may not "
+                    "fully reflect local audience preferences."
+                )
+            for i, link in enumerate(links, 1):
+                source_country = countries_by_url.get(_post_url_key(link))
+                if source_country is None:
+                    label = "Country unknown"
+                elif source_country == selected_country:
+                    label = "Local example"
+                else:
+                    label = "Regional example"
+                st.markdown(f"**{i}. {label}**")
+                st.markdown(f"[View source post]({link})")
+    else:
+        st.caption("No supporting source links were saved for this topic.")
 
 
 # ============================================================
@@ -309,9 +607,10 @@ else:
 st.subheader("1. Recommended Channels")
 
 st.caption(
-    "Based on matched post engagement distributions, "
-    "data sufficiency and statistical evidence — "
-    "not a weighted engagement score."
+    "Based on environmental post engagement distributions, "
+    "data sufficiency and statistical evidence. "
+    "Where those rules cannot identify a Primary Channel, a "
+    "posting-activity fallback may be shown."
 )
 
 primary = evidence.get("primary_channel")
@@ -329,6 +628,14 @@ status = evidence.get("analysis_status", "Inconclusive")
 
 st.markdown(f"**Analysis outcome:** {status}")
 st.write(evidence.get("explanation", "No explanation available."))
+
+if evidence.get("used_activity_fallback", False):
+    st.warning(
+        "**Limited-data recommendation:** This Primary channel did not pass the "
+        "normal recommendation rules. It is suggested only because it has the "
+        "most observed environmental posts in the selected country and period. "
+        "Posting frequency does not demonstrate superior engagement."
+    )
 
 if status in (
     "Inconclusive",
@@ -354,23 +661,49 @@ st.caption(
 
 if summary.empty:
     st.info(
-        "There are no qualifying posts for the selected monthly topics. "
-        "Try a wider month range."
+        "No environmental original posts were found for the selected "
+        "country and period."
     )
-
 else:
-    eligible = summary.loc[summary["eligible"]].copy()
+    fallback = bool(evidence.get("used_activity_fallback", False))
 
-    if eligible.empty:
+    recommended = summary.loc[
+        summary["recommendation"].isin(
+            ["Primary", "Secondary", "Primary (activity fallback)"]
+        )
+    ]
+
+    if fallback:
+        chosen = recommended.loc[
+            recommended["recommendation"] == "Primary (activity fallback)"
+        ]
+
+        if not chosen.empty:
+            item = chosen.iloc[0]
+
+            st.markdown(
+                f"**{str(item['platform']).title()} — provisional Primary channel:** "
+                f"This platform has the highest observed posting activity for "
+                f"environmental content in {country} during the selected period "
+                f"({int(item['post_count']):,} original posts). "
+                "The available data did not satisfy the normal channel-selection "
+                "rules, so this is a practical starting point rather than "
+                "evidence of stronger audience engagement."
+            )
+
+            st.write(
+                "**Why no Secondary?** There is not enough supporting evidence "
+                "to recommend an additional channel confidently."
+            )
+
+    elif recommended.empty:
         st.info(
-            "There is not yet enough topic-matched content on any "
-            "single platform to make a reliable channel recommendation."
+            "The current evidence does not clearly distinguish a Primary channel. "
+            "No platform is being presented as an engagement leader."
         )
 
     else:
-        recommended = summary.loc[
-            summary["recommendation"].isin(["Primary", "Secondary"])
-        ]
+        eligible = summary.loc[summary["eligible"]].copy()
 
         for _, item in recommended.iterrows():
             platform = str(item["platform"])
@@ -381,9 +714,9 @@ else:
             ]
 
             reasons = [
-                f"{platform} has sufficient relevant content from "
-                f"{country} during the selected period, "
-                "providing a useful basis for comparison."
+                f"{platform.title()} has at least 30 original environmental posts "
+                f"from {country} in the selected period, allowing its audience "
+                "engagement to be compared with other eligible channels."
             ]
 
             if not others.empty:
@@ -394,87 +727,60 @@ else:
 
                 if typical > other_median:
                     reasons.append(
-                        "Its typical posts attract stronger engagement "
-                        "than the typical performance of other eligible channels."
+                        "Its typical posts show comparatively stronger engagement."
                     )
                 else:
                     reasons.append(
-                        "Its audience engagement is competitive when "
-                        "compared with other eligible channels."
+                        "Its engagement remains competitive across the observed posts."
                     )
 
             if float(item["iqr"]) <= float(eligible["iqr"].median()):
                 reasons.append(
-                    "Engagement is relatively consistent across its posts."
+                    "Engagement is relatively consistent across posts."
                 )
             else:
                 reasons.append(
-                    "Some posts achieve substantially stronger engagement "
-                    "than others, suggesting potential for standout content."
+                    "Performance varies between posts, with potential "
+                    "for standout content."
                 )
 
             if role == "Primary":
                 reasons.append(
-                    "The comparative analysis provides evidence supporting "
-                    "it as the leading channel; the decision is not based "
-                    "on total engagement alone."
+                    "It has the strongest overall supporting evidence across the "
+                    "engagement distribution; this is not based on posting volume alone."
                 )
             else:
                 reasons.append(
-                    "It offers an additional channel with meaningful "
-                    "engagement strengths, rather than being chosen "
-                    "simply as the runner-up."
+                    "It offers a competitive alternative or complementary channel."
                 )
 
-            interactions = {
-                "discussion": float(item.get("replies", 0)),
-                "sharing": (
-                    float(item.get("reposts", 0))
-                    + float(item.get("quotes", 0))
-                ),
-            }
+            discussion = float(item.get("replies", 0))
+            sharing = (
+                float(item.get("reposts", 0))
+                + float(item.get("quotes", 0))
+            )
 
-            if (
-                interactions["discussion"] > interactions["sharing"]
-                and interactions["discussion"] > 0
-            ):
+            if discussion > sharing and discussion > 0:
                 reasons.append(
-                    "Its audience interactions suggest opportunities "
-                    "for discussion and conversation."
+                    "Audience replies suggest opportunities for discussion."
                 )
-            elif interactions["sharing"] > 0:
+            elif sharing > 0:
                 reasons.append(
-                    "Sharing and reposting activity suggests "
-                    "opportunities to amplify messages."
+                    "Sharing activity suggests opportunities for message amplification."
                 )
 
             with st.container(border=True):
-                st.markdown(f"**{role} channel: {platform}**")
+                st.markdown(
+                    f"**{role} channel: {platform.title()}**"
+                )
 
                 for reason in reasons:
-                    st.markdown(f"- {reason}")
+                    st.write(reason)
 
-        if not primary:
-            st.info(
-                "The current evidence does not clearly distinguish "
-                "a leading platform. This is an inconclusive comparison, "
-                "not a recommendation to avoid these channels."
-            )
-
-            candidates = ", ".join(
-                eligible["platform"].astype(str)
-            )
-
+        if primary and not secondary:
             st.write(
-                f"Channels with sufficient relevant posts: {candidates}."
-            )
-
-        elif not secondary:
-            st.write(
-                "**Why no secondary channel?** "
-                "The available comparisons do not establish another "
-                "channel with sufficiently competitive evidence "
-                "to justify a separate recommendation."
+                "**Why no Secondary?** No other channel had sufficiently "
+                "competitive supporting evidence to justify a separate recommendation."
             )
 
 
@@ -490,22 +796,23 @@ with st.expander("Data coverage and recommendation limitations"):
     )
 
     st.write(
-        "Posts matching the monthly top-three news topics: "
-        f"{evidence.get('matched_post_count', 0):,}."
+        "Original environmental posts used for channel analysis: "
+        f"{evidence.get('environmental_posts_in_country_period', 0):,}."
     )
 
     st.write(
-        "The analysis uses unique original posts, not individual "
-        "comments, for the 30-post eligibility requirement. "
-        "Posts about other environmental topics remain available "
-        "in Engagement Metrics Overview but are not included here."
+        "WHERE uses all environmental original posts from the selected country "
+        "and period, not only the top-three news topics. The 30-post minimum "
+        "applies to the normal recommendation rules. Linked comment reactions "
+        "can contribute to engagement, but comments do not count as original posts. "
+        "The top-three monthly topics are used separately for HOW guidance."
     )
 
     if not summary.empty:
         for _, item in summary.iterrows():
             st.write(
                 f"{item['platform']}: "
-                f"{int(item['post_count']):,} matching posts "
+                f"{int(item['post_count']):,} environmental original posts "
                 f"({'eligible' if item['eligible'] else 'below the 30-post minimum'})."
             )
 
@@ -567,22 +874,21 @@ else:
 
     record = relevant.iloc[options.index(selected)]
 
-    st.markdown(
-        f"**{record['topic_name']}** · "
-        f"{record['_month']:%B %Y}"
-    )
-
     st.caption(
         "Messaging guidance targets short-form vertical videos "
         "(TikTok / Instagram Reels), even when the recommended "
         "engagement channel is different. "
         "The generator can use regional posts when fewer than "
-        "20 country posts exist; the saved table does not record "
-        "which scope was used."
+        "20 matching country posts exist. Example source countries "
+        "and local-data sufficiency are checked below."
     )
 
-    _show_guidance(record)
-
+    _show_guidance(
+        record,
+        selected_country=country,
+        posts=data["posts"],
+        monthly_topics=data["monthly_topics"]
+    )
 
 # ============================================================
 # METHODOLOGY
@@ -590,12 +896,14 @@ else:
 
 with st.expander("About the methodology"):
     st.write(
-        "WHERE: For each month, select that country's top three "
-        "news topics, match post keywords, deduplicate posts, "
-        "require at least 30 per platform, then compare "
-        "engagement distributions using Kruskal–Wallis, "
-        "Dunn–Holm and Cliff's delta. "
+        "WHERE: Use all environmental original posts in the selected country "
+        "and period, deduplicate posts, and require at least 30 per platform "
+        "for the normal recommendation. Compare engagement distributions "
+        "using Kruskal–Wallis, Dunn–Holm and Cliff's delta as supporting evidence. "
+        "If no Primary is identified, the platform with the most observed "
+        "original environmental posts can be shown as a limited-data fallback "
+        "(provided there is no tie). This is not an engagement-performance claim. "
         "HOW: Read separately generated Gemini messaging advice "
-        "saved in Supabase. No AI generation runs on this page."
+        "saved in Supabase."
     )
 

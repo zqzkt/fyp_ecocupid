@@ -221,7 +221,6 @@ def match_monthly_posts(data: dict[str, pd.DataFrame], country: str,
     posts = posts.loc[posts["_engagement"].notna() & (posts["_engagement"] >= 0)].copy()
     return posts, topics
 
-
 def _cliffs_delta(a: np.ndarray, b: np.ndarray) -> float:
     """(P(a>b) - P(a<b)), efficient even for thousands of posts."""
     sorted_b = np.sort(b)
@@ -416,6 +415,40 @@ def _decide(summary: pd.DataFrame, pairs: pd.DataFrame,
         f"({confidence} evidence). {second_text} "
         "Statistical significance is supporting evidence, not a prerequisite.")
 
+def _apply_activity_fallback(summary: pd.DataFrame, status: str,
+                             explanation: str) -> tuple[pd.DataFrame, str, str]:
+    """Last-resort primary: largest observed posting volume, NOT engagement superiority.
+
+    Apply only if the normal recommendation has no Primary. Do not weaken the
+    30-post rule or automatically recommend a Secondary. A tie remains unresolved.
+    """
+    if summary.empty or (summary["recommendation"] == "Primary").any():
+        return summary, status, explanation
+
+    counts = pd.to_numeric(summary["post_count"], errors="coerce").fillna(0)
+    if not counts.gt(0).any():
+        return summary, status, explanation
+    maximum = int(counts.max())
+    leaders = summary.loc[counts == maximum]
+    if len(leaders) != 1:
+        names = ", ".join(sorted(leaders["platform"].astype(str)))
+        return summary, "Inconclusive — posting activity tied", (
+            f"No platform met the normal Primary recommendation criteria. "
+            f"{names} each have {maximum} environmental posts, so posting "
+            "frequency cannot distinguish a single fallback channel.")
+
+    summary = summary.copy()
+    winner = str(leaders.iloc[0]["platform"])
+    summary.loc[summary["platform"] == winner, "recommendation"] = "Primary (activity fallback)"
+    summary.loc[summary["platform"] == winner, "evidence_strength"] = "Limited — activity only"
+    return summary, "Limited-data recommendation", (
+        f"{winner} is suggested as a provisional Primary channel because it has "
+        f"the most observed environmental posts ({maximum}) in the selected "
+        "country and period. It did not qualify for a Primary recommendation "
+        "under the normal engagement-distribution and statistical rules. "
+        "Posting frequency indicates observed activity, not stronger audience "
+        "engagement or effectiveness. No Secondary channel is assigned by this fallback.")
+
 
 def _prepare_country_posts(data: dict[str, pd.DataFrame], country: str,
                            selected_months: tuple[Any, Any]) -> pd.DataFrame:
@@ -495,6 +528,7 @@ def recommend_channels(data: dict[str, pd.DataFrame], country: str,
         "kruskal_h": np.nan, "kruskal_p": np.nan,
         "analysis_status": "Insufficient data", "explanation": "",
         "primary_channel": None, "secondary_channel": None, "min_posts": MIN_POSTS,
+        "used_activity_fallback": False,
         "topic_match_method": "WHERE: all environmental posts. HOW: monthly top-three news topics.",
         "total_linked_comments": int(posts["_linked_comments"].sum()) if not posts.empty else 0,
         "total_comment_reactions": float(posts["_comment_reactions"].sum()) if not posts.empty else 0,
@@ -514,8 +548,11 @@ def recommend_channels(data: dict[str, pd.DataFrame], country: str,
                 evidence["pairwise_tests"] = _pairwise_dunn(groups)
     significant = bool(pd.notna(evidence["kruskal_p"]) and evidence["kruskal_p"] < ALPHA)
     summary, status, explanation = _decide(summary, evidence["pairwise_tests"], significant)
+    summary, status, explanation = _apply_activity_fallback(summary, status, explanation)
     evidence["analysis_status"], evidence["explanation"] = status, explanation
-    primary = summary.loc[summary["recommendation"] == "Primary", "platform"]
+    evidence["used_activity_fallback"] = status == "Limited-data recommendation"
+    primary = summary.loc[summary["recommendation"].isin(
+        ["Primary", "Primary (activity fallback)"]), "platform"]
     secondary = summary.loc[summary["recommendation"] == "Secondary", "platform"]
     evidence["primary_channel"] = primary.iloc[0] if len(primary) else None
     evidence["secondary_channel"] = secondary.iloc[0] if len(secondary) else None
