@@ -13,6 +13,7 @@ lingua-language-detector
 sentence-transformers
 supabase
 scikit-learn
+scipy>=1.11
 sentencepiece
 torch
 transformers<5
