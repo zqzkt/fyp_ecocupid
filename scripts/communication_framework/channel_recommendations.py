@@ -542,7 +542,7 @@ def recommend_channels(data: dict[str, pd.DataFrame], country: str,
         groups = {name: posts.loc[posts["platform"] == name, "_engagement"].to_numpy(dtype=float)
                   for name in eligible}
         if len(np.unique(np.concatenate(list(groups.values())))) > 1:
-            h, p = kruskal(*groups)
+            h, p = kruskal(*groups.values())
             evidence["kruskal_h"], evidence["kruskal_p"] = float(h), float(p)
             if p < ALPHA:
                 evidence["pairwise_tests"] = _pairwise_dunn(groups)
