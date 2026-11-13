@@ -28,9 +28,14 @@ from style import (
     FONT_PX,
     categorical_colors,
     kpi_card,
+    CARD_BG,
+    HAIRLINE,
+    SURFACE_COLOR,
     sequential_colorscale,
     series_color,
     style_figure,
+    text_color,
+    theme,
 )
 
 
@@ -267,6 +272,35 @@ section[data-testid="stSidebar"] [data-testid="stSelectSlider"] [data-baseweb="s
 </style>
 """, unsafe_allow_html=True)
 
+# The sidebar styles above hard-code light-mode colours. In dark mode, override
+# them (same selectors, declared later) so the filters match the dark theme.
+if theme() == "dark":
+    st.markdown(f"""
+<style>
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {{
+    color: {text_color()} !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+section[data-testid="stSidebar"] [data-testid="stDateInput"] [data-baseweb="input"] > div,
+section[data-testid="stSidebar"] [data-testid="stDateInput"] input {{
+    background: {SURFACE_COLOR["dark"]} !important;
+    border: 1px solid {HAIRLINE["dark"]} !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div *,
+section[data-testid="stSidebar"] [data-testid="stDateInput"] input {{
+    color: {text_color()} !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stSlider"] [role="slider"],
+section[data-testid="stSidebar"] [data-testid="stSelectSlider"] [role="slider"] {{
+    background-color: {series_color()} !important;
+    border-color: {series_color()} !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stSelectSlider"] [data-baseweb="slider"] > div > div {{
+    color: {series_color()} !important;
+}}
+</style>
+""", unsafe_allow_html=True)
+
 if not selected_countries:
     st.warning("Select at least one country in the sidebar.")
     st.stop()
@@ -361,6 +395,20 @@ KPI_CSS = """
 @media(max-width:500px){.ec-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
 </style>
 """
+# KPI_CSS hard-codes light-mode colours; in dark mode, switch the header text
+# and KPI cards to the theme's dark surfaces so they stay readable.
+if theme() == "dark":
+    KPI_CSS += (
+        "<style>"
+        f".ec-summary h1, .ec-impressions-heading {{color:{text_color()};}}"
+        ".ec-summary-subtitle, .ec-summary-note {color:rgba(240,237,230,0.72);}"
+        f".ec-kpi-tile {{background:{CARD_BG['dark']};border:1px solid {HAIRLINE['dark']};"
+        f"border-left:3px solid {series_color()};box-shadow:none;}}"
+        ".ec-kpi-label {color:rgba(240,237,230,0.8);}"
+        f".ec-kpi-value {{color:{series_color()};}}"
+        "</style>"
+    )
+
 summary_values = [
     ("Posts", f"{post_total:,}"),
     ("Total Engagement", _format_number(engagement_total)),
