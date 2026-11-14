@@ -134,6 +134,174 @@ def aggregate_topics(
     return grouped
 
 
+def _summary_keywords(value: object) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    text = str(value).strip()
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _normalise_summary_term(value: object) -> str:
+    return " ".join(
+        str(value).casefold().replace("/", " ").split()
+    )
+
+
+def _summary_term_tokens(value: object) -> set[str]:
+    tokens = _normalise_summary_term(value).split()
+    return {
+        token[:-1] if len(token) > 3 and token.endswith("s") else token
+        for token in tokens
+        if token not in {"and", "or", "the"}
+    }
+
+
+def _summary_term_match_score(left: object, right: object) -> int:
+    left_term = _normalise_summary_term(left)
+    right_term = _normalise_summary_term(right)
+    if left_term == right_term:
+        return 100
+
+    left_tokens = _summary_term_tokens(left)
+    right_tokens = _summary_term_tokens(right)
+    shared_tokens = left_tokens & right_tokens
+    if not shared_tokens:
+        return 0
+    if left_tokens.issubset(right_tokens):
+        return 50 + len(left_tokens)
+    if right_tokens.issubset(left_tokens):
+        return 50 + len(right_tokens)
+    return 0
+
+
+def _summary_key_matches_topic(key: object, topic: str) -> bool:
+    return _summary_term_match_score(key, topic) > 0
+
+
+def _summary_value_and_key(
+    value: object,
+    topic: str,
+    keywords: list[str],
+) -> tuple[str, str]:
+    if isinstance(value, str):
+        parsed = None
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(value)
+                break
+            except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+                continue
+        if isinstance(parsed, dict):
+            value = parsed
+    if isinstance(value, dict):
+        matching_key = max(
+            (
+                key for key in value
+                if _summary_key_matches_topic(key, topic)
+            ),
+            key=lambda key: _summary_term_match_score(key, topic),
+            default=None,
+        )
+        if matching_key is not None:
+            return str(value[matching_key]).strip(), str(matching_key)
+        try:
+            keyword_index = next(
+                index
+                for index, keyword in enumerate(keywords)
+                if _summary_term_match_score(keyword, topic) > 0
+            )
+        except StopIteration:
+            keyword_index = -1
+        if keyword_index >= 0:
+            numbered_key = f"Topic{keyword_index + 1}"
+            if numbered_key in value:
+                return str(value[numbered_key]).strip(), topic
+        if "Raw_Summary" in value:
+            return str(value["Raw_Summary"]).strip(), topic
+        return "", ""
+    return str(value or "").strip(), topic
+
+
+def _summary_value(value: object, topic: str, keywords: list[str]) -> str:
+    return _summary_value_and_key(value, topic, keywords)[0]
+
+
+@st.cache_data(ttl=600, show_spinner="Loading discussion summaries...")
+def load_topic_summaries(
+    month: pd.Timestamp,
+    countries: list[str],
+    topics: list[str],
+) -> pd.DataFrame:
+    """Return matching topic summaries for each selected country."""
+    summaries = _load_table("summary")
+    required = {"country", "keywords", "summary"}
+    if summaries.empty or not required.issubset(summaries.columns):
+        return pd.DataFrame(columns=["country", "topic", "summary"])
+
+    summaries = summaries.copy()
+    summaries["_month"] = (
+        pd.to_datetime(summaries.get("month"), errors="coerce", utc=True)
+        .dt.tz_localize(None)
+        .dt.to_period("M")
+        .dt.to_timestamp()
+    )
+    summaries["country"] = summaries["country"].astype(str).str.strip()
+    summaries = summaries[
+        (summaries["_month"] == month)
+        & summaries["country"].isin(countries)
+    ]
+
+    requested_topics = [
+        str(topic).strip()
+        for topic in topics
+        if str(topic).strip()
+    ]
+    matches: list[dict[str, str]] = []
+    for row in summaries.itertuples(index=False):
+        keywords = _summary_keywords(getattr(row, "keywords"))
+        for topic in requested_topics:
+            if not any(
+                _summary_term_match_score(keyword, topic) > 0
+                for keyword in keywords
+            ):
+                continue
+            summary, matched_key = _summary_value_and_key(
+                getattr(row, "summary"),
+                topic,
+                keywords,
+            )
+            if (
+                summary
+                and summary.casefold() != "summary could not be generated."
+            ):
+                display_topic = (
+                    topic
+                    if matched_key.casefold().startswith("topic")
+                    else matched_key
+                )
+                matches.append(
+                    {
+                        "country": row.country,
+                        "topic": display_topic,
+                        "summary": summary,
+                    }
+                )
+
+    return pd.DataFrame(
+        matches,
+        columns=["country", "topic", "summary"],
+    ).drop_duplicates(["country", "topic"], keep="first")
+
+
 @st.cache_data(ttl=600, show_spinner="Loading representative posts...")
 def load_representative_posts(
     month: pd.Timestamp,

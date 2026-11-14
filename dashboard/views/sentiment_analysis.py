@@ -14,6 +14,7 @@ from sentiment_analysis_data import (
     aggregate_topics,
     load_representative_posts,
     load_sentiment,
+    load_topic_summaries,
 )
 from style import html_table, kpi_card, style_figure
 
@@ -296,6 +297,25 @@ event = st.plotly_chart(
     },
     key="sentiment_topic_bubbles",
 )
+
+summary_topics = topics["topic"].astype(str).tolist()
+summaries = load_topic_summaries(
+    selected_month,
+    list(selected_countries),
+    summary_topics,
+)
+with st.expander("What people are saying", expanded=False):
+    for country in selected_countries:
+        with st.container(border=True):
+            st.markdown(f"### {country}")
+            country_summaries = summaries[summaries["country"] == country]
+            if country_summaries.empty:
+                st.caption("No summaries available for the visible topics.")
+            else:
+                for summary in country_summaries.itertuples():
+                    st.markdown(f"**{summary.topic}**")
+                    st.markdown(summary.summary)
+                    st.divider()
 
 selected_points = getattr(getattr(event, "selection", None), "points", [])
 if selected_points:
