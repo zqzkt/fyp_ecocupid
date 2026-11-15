@@ -14,6 +14,7 @@ import re
 from urllib.parse import urlsplit, parse_qs
 from pathlib import Path
 
+import emoji
 import pandas as pd
 import streamlit as st
 
@@ -56,10 +57,10 @@ st.markdown("""<style>
 .ec-report-key {background:#e8f3e7;border-left:5px solid #2a784f;padding:17px 20px;border-radius:10px;margin:10px 0}
 .ec-report-key-label {color:#56725c;font-size:.78rem;font-weight:750;letter-spacing:.07em}
 .ec-report-key-text {font-size:1.13rem;font-weight:700;color:#214b35;margin-top:7px;line-height:1.5}
-.ec-report-step {display:flex;align-items:flex-start;gap:18px;padding:13px 6px;border-bottom:1px solid #d7dfd0}
+.ec-report-step {display:flex;align-items:flex-start;gap:16px;padding:10px 4px;border-bottom:1px solid #d7dfd0}
 .ec-report-step:last-child {border-bottom:none}
-.ec-report-step-title {flex:0 0 100px;box-sizing:border-box;text-align:center;background:#e3f0e3;border-radius:10px;padding:13px 8px;font-size:1rem;font-weight:750;color:#236a47}
-.ec-report-step-text {flex:1;font-size:.96rem;color:#38483c;line-height:1.6;padding-top:9px;white-space:pre-wrap}
+.ec-report-step-title {flex:0 0 88px;box-sizing:border-box;text-align:center;background:#e3f0e3;border-radius:999px;padding:4px 8px;font-size:.88rem;font-weight:750;color:#236a47;white-space:nowrap}
+.ec-report-step-text {flex:1;font-size:.96rem;color:#38483c;line-height:1.55;padding-top:2px;white-space:pre-wrap}
 .ec-report-warning {background:#f5f2e8;border-left:4px solid #a3a278;padding:13px 17px;border-radius:8px}
 .ec-channel {min-height:150px}
 .ec-chips {display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0 !important;padding:0 !important;list-style:none}
@@ -295,6 +296,28 @@ def _local_topic_post_count(record: pd.Series, selected_country: str,
     return int((within_month & local & environmental & matched).sum())
 
 
+_SOURCE_LABELS = (
+    (("youtube.com", "youtu.be"), "YouTube video"),
+    (("x.com", "twitter.com"), "X post"),
+    (("instagram.com",), "Instagram post"),
+    (("facebook.com", "fb.com", "fb.watch"), "Facebook post"),
+    (("reddit.com", "redd.it"), "Reddit post"),
+    (("tiktok.com",), "TikTok video"),
+)
+
+
+def _source_label(url: str) -> str:
+    """Name a source link after its platform, e.g. 'YouTube video' or 'X post'."""
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return "Source post"
+    for domains, label in _SOURCE_LABELS:
+        if any(host == d or host.endswith("." + d) for d in domains):
+            return label
+    return host.removeprefix("www.") or "Source post"
+
+
 def _example_country_map(posts: pd.DataFrame) -> dict[str, str | None]:
     if posts.empty or not {"post_url", "inferred_country"}.issubset(posts.columns):
         return {}
@@ -339,8 +362,30 @@ def _report_items(value) -> list[str]:
     return [str(item).strip() for item in values if str(item).strip()]
 
 
-def _report_field(record: pd.Series, key: str, label: str) -> None:
+# Gemini writes emojis as bracketed short names, e.g. "[droplet]" or
+# "[earth_asia]". Only lowercase snake_case names that resolve to a real emoji
+# are converted, so placeholders like "[Location]" or "[animal]" are kept.
+_EMOJI_TOKEN = re.compile(r"\[([a-z0-9_]+)\]")
+_EMOJI_FALLBACKS = {"earth": "🌍"}
+
+
+def _emoji_name(match: re.Match) -> str:
+    name = match.group(1)
+    for language in ("alias", "en"):
+        converted = emoji.emojize(f":{name}:", language=language)
+        if converted != f":{name}:":
+            return converted
+    return _EMOJI_FALLBACKS.get(name, match.group(0))
+
+
+def _with_emojis(text: str) -> str:
+    return _EMOJI_TOKEN.sub(_emoji_name, text)
+
+
+def _report_field(record: pd.Series, key: str, label: str, emojis: bool = False) -> None:
     items = _report_items(record.get(key))
+    if emojis:
+        items = [_with_emojis(item) for item in items]
     if not items:
         return
     st.markdown(f"**{label}**")
@@ -352,10 +397,11 @@ def _report_field(record: pd.Series, key: str, label: str) -> None:
 
 
 
-# Split only when a comma or semicolon introduces the NEXT timed stage.
-# A regular comma inside a description is left untouched.
-_STORY_BOUNDARY = re.compile(
-    r"\s*[;,]\s*(?=(?:\d{1,3}\s*[-–—]\s*\d{1,3}\s*(?:s|sec|seconds)?\s*:))",
+# A new stage starts wherever a timestamp like "3-15s:" begins, whatever
+# punctuation precedes it (Gemini uses ".", ";" or "," between stages).
+# The lookbehind stops "10-15s" from being split inside the number.
+_STORY_STAGE_START = re.compile(
+    r"(?<![\w:])(?=\d{1,3}\s*[-–—]\s*\d{1,3}\s*(?:s|sec|seconds)?\s*:)",
     re.IGNORECASE,
 )
 _STORY_TIME = re.compile(
@@ -365,14 +411,15 @@ _STORY_TIME = re.compile(
 
 
 def _story_steps(value) -> list[str]:
-    """Split semicolon stages and comma-separated timed stages safely."""
+    """Split a story structure into stages: at timestamps if present, else at semicolons."""
     stages = []
     for item in _report_items(value):
-        # First split at semicolons; then split comma-separated timed stages.
-        for section in item.split(";"):
-            for stage in _STORY_BOUNDARY.split(section):
-                if stage.strip():
-                    stages.append(stage.strip())
+        parts = (_STORY_STAGE_START.split(item) if _STORY_STAGE_START.search(item)
+                 else item.split(";"))
+        for part in parts:
+            part = part.strip().rstrip(";,").strip()
+            if part:
+                stages.append(part)
     return stages
 
 
@@ -442,9 +489,9 @@ def _show_guidance(record: pd.Series, selected_country: str,
         if hooks:
             st.markdown("**Opening hooks**")
             for i, hook in enumerate(hooks, 1):
-                st.markdown(f"**{i}.** {hook}")
-        _report_field(record, "call_to_action", "Call to action")
-        _report_field(record, "captions", "Caption guidance")
+                st.markdown(f"**{i}.** {_with_emojis(hook)}")
+        _report_field(record, "call_to_action", "Call to action", emojis=True)
+        _report_field(record, "captions", "Caption guidance", emojis=True)
 
     with dos_tab:
         do_col, dont_col = st.columns(2, gap="medium")
@@ -480,14 +527,8 @@ def _show_guidance(record: pd.Series, selected_country: str,
         countries_by_url = _example_country_map(posts)
         lines = []
         for i, link in enumerate(links, 1):
-            source_country = countries_by_url.get(_post_url_key(link))
-            if source_country is None:
-                label = "Country unknown"
-            elif source_country == selected_country:
-                label = "Local example"
-            else:
-                label = "Regional example"
-            lines.append(f"{i}. [{label}]({link})")
+            source_country = countries_by_url.get(_post_url_key(link)) or "country unknown"
+            lines.append(f"{i}. [{_source_label(link)}]({link}) · {source_country}")
         st.markdown("\n".join(lines))
 
 
