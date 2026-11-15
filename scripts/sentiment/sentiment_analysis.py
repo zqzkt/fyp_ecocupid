@@ -2,8 +2,11 @@
 
 Classifies clean_posts and clean_comments rows into the 27 GoEmotions emotions
 plus neutral, allowing multiple non-neutral labels per item, and upserts per
-(country, topic) emotion counts into Supabase. The default mode scores the previous month;
---all recomputes aggregates across all cleaned social data.
+(country, topic) emotion counts into Supabase. Topics are the monthly_topic_stats
+topic_name values (top 3 per country), matched through each row's matched_keywords;
+rows matching none of that month's topics are skipped. Only environmental posts,
+and comments on them, are scored. The default mode scores the
+previous month; --all recomputes aggregates across all cleaned social data.
 """
 
 from __future__ import annotations
@@ -29,7 +32,11 @@ from scripts.sentiment.text_preprocessing import normalize_emoji_tags
 from scripts.supabase.twitter_pipeline import previous_month_window
 
 MODEL_PATH = Path(__file__).resolve().parent / "emotion_model.joblib"
-UNSPECIFIED_TOPIC = "Unspecified"
+# Same cut-off as posts_comments_summary.py so sentiment topics line up with summaries.
+TOPIC_RANK_LIMIT = 3
+
+# (country, year, month) -> casefolded keyword or topic name -> topic names
+TopicLookup = dict[tuple[str, int, int], dict[str, list[str]]]
 
 # Raw country values seen across platforms (e.g. YouTube stores ISO codes).
 COUNTRY_ALIASES = {
@@ -64,18 +71,58 @@ def normalize_country(value: str | None) -> str:
     return COUNTRY_ALIASES.get(value, value)
 
 
-def row_topics(row: dict[str, Any]) -> list[str]:
-    keywords = row.get("matched_keywords") or []
-    if not keywords:
-        return [UNSPECIFIED_TOPIC]
-    seen: set[str] = set()
+def fetch_topic_lookup(session: requests.Session, base_url: str, key: str) -> TopicLookup:
+    """Map each country/month's top topic keywords (and topic names) to topic_name."""
+    lookup: TopicLookup = {}
+    offset = 0
+    page_size = 1000
+    while True:
+        response = session.get(
+            f"{base_url}/rest/v1/monthly_topic_stats",
+            params={
+                "select": "country,month,topic_name,monthly_keywords",
+                "topic_rank": f"lte.{TOPIC_RANK_LIMIT}",
+                "limit": page_size,
+                "offset": offset,
+            },
+            headers=headers(key),
+            timeout=60,
+        )
+        response.raise_for_status()
+        page = response.json()
+        for row in page:
+            topic = str(row.get("topic_name") or "").strip()
+            try:
+                year, month = int(str(row["month"])[:4]), int(str(row["month"])[5:7])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not topic:
+                continue
+            raw = row.get("monthly_keywords") or ""
+            keywords = raw if isinstance(raw, list) else str(raw).split(",")
+            # Instagram tags rows with the topic name rather than a keyword.
+            terms = {str(k).strip().casefold() for k in [*keywords, topic] if str(k).strip()}
+            by_term = lookup.setdefault((normalize_country(row.get("country")), year, month), {})
+            for term in terms:
+                topics = by_term.setdefault(term, [])
+                if topic not in topics:
+                    topics.append(topic)
+        if len(page) < page_size:
+            return lookup
+        offset += page_size
+
+
+def row_topics(
+    row: dict[str, Any],
+    by_term: dict[str, list[str]],
+) -> list[str]:
+    """Return the distinct topic names whose keywords this row matched."""
     topics: list[str] = []
-    for keyword in keywords:
-        keyword = str(keyword).strip()
-        if keyword and keyword.casefold() not in seen:
-            seen.add(keyword.casefold())
-            topics.append(keyword)
-    return topics or [UNSPECIFIED_TOPIC]
+    for keyword in row.get("matched_keywords") or []:
+        for topic in by_term.get(str(keyword).strip().casefold(), []):
+            if topic not in topics:
+                topics.append(topic)
+    return topics
 
 
 def month_window(month: str) -> tuple[str, str]:
@@ -164,9 +211,65 @@ def fetch_all_rows(
         offset += page_size
 
 
-def row_entries(rows: list[dict[str, Any]]) -> list[tuple[str, str, str, int | None, int | None]]:
+def filter_environmental(
+    session: requests.Session,
+    base_url: str,
+    key: str,
+    posts: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep environmental posts, and comments whose parent post is environmental.
+
+    clean_comments has no is_environmental column, so a comment follows its parent
+    post. Comments whose parent never reached clean_posts are dropped too.
+    """
+    environmental_posts: set[tuple[str, str]] = set()
+    offset = 0
+    page_size = 1000
+    while True:
+        response = session.get(
+            f"{base_url}/rest/v1/clean_posts",
+            params={
+                "select": "platform,source_id",
+                "is_environmental": "eq.true",
+                "limit": page_size,
+                "offset": offset,
+            },
+            headers=headers(key),
+            timeout=60,
+        )
+        response.raise_for_status()
+        page = response.json()
+        for row in page:
+            # source_id is "<platform>:post:<raw id>"; comments store the raw id.
+            environmental_posts.add((row["platform"], str(row["source_id"]).split(":", 2)[-1]))
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    kept_posts = [row for row in posts if row.get("is_environmental") is True]
+    kept_comments = [
+        row for row in comments
+        if any(
+            (row.get("platform"), str(row[column])) in environmental_posts
+            for column in ("conversation_id", "parent_source_id")
+            if row.get(column)
+        )
+    ]
+    print(
+        f"Kept {len(kept_posts)}/{len(posts)} environmental posts and "
+        f"{len(kept_comments)}/{len(comments)} comments on environmental posts."
+    )
+    return kept_posts, kept_comments
+
+
+def row_entries(
+    rows: list[dict[str, Any]],
+    topic_lookup: TopicLookup,
+) -> list[tuple[str, str, str, int | None, int | None]]:
     """Return country/topic/text/month/year entries for each row/topic pairing."""
     entries: list[tuple[str, str, str, int | None, int | None]] = []
+    unmatched = 0
     for row in rows:
         text = (row.get("cleaned_text") or "").strip()
         if not text:
@@ -182,12 +285,15 @@ def row_entries(rows: list[dict[str, Any]]) -> list[tuple[str, str, str, int | N
         except (TypeError, ValueError):
             year, month = None, None
         country = normalize_country(row.get("inferred_country"))
-        if country.casefold() == "unspecified":
+        if country.casefold() == "unspecified" or year is None:
             continue
-        for topic in row_topics(row):
-            if topic.casefold() == UNSPECIFIED_TOPIC.casefold():
-                continue
+        topics = row_topics(row, topic_lookup.get((country, year, month), {}))
+        if not topics:
+            unmatched += 1
+        for topic in topics:
             entries.append((country, topic, text, year, month))
+    if unmatched:
+        print(f"Skipped {unmatched} rows whose keywords match no top-{TOPIC_RANK_LIMIT} topic for their month.")
     return entries
 
 
@@ -304,9 +410,11 @@ def main() -> None:
                 session, base_url, key, "clean_comments", start_time, end_time, args.platform, args.source_type
             ) if args.source_type != "post" else []
         )
+    posts, comments = filter_environmental(session, base_url, key, posts, comments)
     print(f"Classifying {len(posts)} clean posts and {len(comments)} clean comments...")
 
-    entries = row_entries(posts) + row_entries(comments)
+    topic_lookup = fetch_topic_lookup(session, base_url, key)
+    entries = row_entries(posts, topic_lookup) + row_entries(comments, topic_lookup)
     if not entries:
         print("No cleaned text available to classify.")
         return

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,14 @@ def topic_keyword_groups(month: str | None = None) -> dict[str, list[str]]:
     if not keywords_by_country:
         raise SystemExit("monthly_topic_stats returned no keywords for the requested month and countries.")
     return keywords_by_country
+
+
+def keyword_in_text(text: str | None, keywords: list[str]) -> str | None:
+    """Return the first keyword appearing in the text as a whole word or phrase, ignoring case."""
+    for keyword in keywords:
+        if re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", text or "", re.IGNORECASE):
+            return keyword
+    return None
 
 
 def project(row: dict[str, Any], columns: tuple[str, ...], required_id: str) -> dict[str, Any] | None:

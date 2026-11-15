@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 
 import pandas as pd
 import streamlit as st
@@ -64,6 +65,110 @@ def _emotion_name(column: str) -> str:
     return column.removesuffix("_count")
 
 
+def _normalize_country(value: object) -> str:
+    return COUNTRY_ALIASES.get(str(value).strip().upper(), str(value).strip())
+
+
+def _same_month(values: pd.Series, month: pd.Timestamp) -> pd.Series:
+    timestamp = pd.to_datetime(values, errors="coerce", utc=True)
+    return timestamp.dt.tz_localize(None).dt.to_period("M").dt.to_timestamp().eq(month)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_monthly_topics() -> pd.DataFrame:
+    return _load_table(
+        "monthly_topic_stats",
+        "country,month,topic_name,monthly_keywords,topic_rank",
+        {"topic_rank": "lte.3"},
+    )
+
+
+def _split_keywords(value: object) -> set[str]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return set()
+    keywords = value if isinstance(value, list) else str(value).split(",")
+    return {str(k).strip().casefold() for k in keywords if str(k).strip()}
+
+
+def _name_fit(name: str, keywords: frozenset[str]) -> float:
+    """Share of a topic name's words that appear in its keywords."""
+    words = set(re.findall(r"\w+", name.casefold())) - {"and"}
+    keyword_words = {word for keyword in keywords for word in re.findall(r"\w+", keyword)}
+    return len(words & keyword_words) / len(words) if words else 0.0
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _monthly_topics_by_month() -> pd.DataFrame:
+    """monthly_topic_stats rows with "_month", normalised country/topic_name, and "bubble".
+
+    "bubble" is the topic_name the topic is shown under. The topic registry fixes
+    a topic's name when it is first detected, but its keywords are re-derived every
+    month, so one month can hold differently named topics with identical keywords
+    (October 2026: Singapore's "National Park" and Malaysia's "Air Pollution & Air
+    Quality", both air pollution/air quality/haze). Those share one bubble, named
+    after whichever of their topic_names best describes the keywords.
+    """
+    topics = _load_monthly_topics()
+    if topics.empty:
+        return topics.assign(_month=pd.Series(dtype="datetime64[ns]"), bubble=pd.Series(dtype=str))
+    topics = topics.assign(
+        _month=pd.to_datetime(topics["month"], errors="coerce", utc=True)
+        .dt.tz_localize(None).dt.to_period("M").dt.to_timestamp(),
+        country=topics["country"].map(_normalize_country),
+        topic_name=topics["topic_name"].astype(str).str.strip(),
+        _keywords=topics["monthly_keywords"].map(lambda value: frozenset(_split_keywords(value))),
+    )
+    topics["bubble"] = topics["topic_name"]
+    for (_, keywords), group in topics.groupby(["_month", "_keywords"]):
+        if keywords and group["topic_name"].nunique() > 1:
+            names = sorted(group["topic_name"].unique())
+            topics.loc[group.index, "bubble"] = max(names, key=lambda name: _name_fit(name, keywords))
+    return topics.drop(columns="_keywords")
+
+
+def bubble_name(month: pd.Timestamp, country: str, topic_name: str) -> str | None:
+    """The bubble a country's monthly_topic_stats topic is shown under, or None if it isn't one."""
+    topics = _monthly_topics_by_month()
+    match = topics.loc[
+        (topics["_month"] == month)
+        & (topics["country"] == country)
+        & topics["topic_name"].str.casefold().eq(str(topic_name).strip().casefold()),
+        "bubble",
+    ]
+    return match.iloc[0] if not match.empty else None
+
+
+def _topic_rows(month: pd.Timestamp, countries: list[str], topic: str) -> pd.DataFrame:
+    """monthly_topic_stats rows shown under this bubble."""
+    topics = _monthly_topics_by_month()
+    return topics[
+        (topics["_month"] == month)
+        & topics["country"].isin(countries)
+        & topics["bubble"].str.casefold().eq(topic.casefold())
+    ]
+
+
+def topic_keywords(
+    month: pd.Timestamp,
+    countries: list[str],
+    topic: str,
+) -> set[str]:
+    """Casefolded monthly_keywords of this bubble's topics for the month and countries."""
+    rows = _topic_rows(month, countries, topic)
+    return set().union(*map(_split_keywords, rows["monthly_keywords"]))
+
+
+def topic_match_terms(
+    month: pd.Timestamp,
+    countries: list[str],
+    topic: str,
+) -> set[str]:
+    """Casefolded keywords that sentiment_analysis.py mapped to this bubble's topics."""
+    # Instagram tags rows with the topic name rather than a keyword.
+    names = set(_topic_rows(month, countries, topic)["topic_name"].str.casefold())
+    return {topic.casefold()} | names | topic_keywords(month, countries, topic)
+
+
 def prepare_sentiment() -> pd.DataFrame:
     sentiment = _load_table("sentiment_analysis")
     if sentiment.empty:
@@ -80,7 +185,19 @@ def prepare_sentiment() -> pd.DataFrame:
         dict(year=sentiment["year"], month=sentiment["month"], day=1),
         errors="coerce",
     )
-    return sentiment.dropna(subset=["_month", "total_items"])
+    sentiment = sentiment.dropna(subset=["_month", "total_items"])
+    # "topic" becomes the bubble name; "topic_name" keeps the stored name. The
+    # inner join drops rows that aren't a monthly_topic_stats topic for their
+    # country and month. It is case-sensitive on purpose: sentiment_analysis.py
+    # writes topic_name exactly, while an older version wrote lowercase keywords
+    # (e.g. "climate change") that would otherwise pass as topic names.
+    bubbles = _monthly_topics_by_month()[["_month", "country", "topic_name", "bubble"]]
+    sentiment = sentiment.assign(topic_name=sentiment["topic"]).merge(
+        bubbles.drop_duplicates(["_month", "country", "topic_name"]),
+        on=["_month", "country", "topic_name"],
+    )
+    sentiment["topic"] = sentiment["bubble"]
+    return sentiment.drop(columns="bubble")
 
 
 def dominant_emotion(row: pd.Series, numeric_columns: list[str]) -> str:
@@ -134,174 +251,6 @@ def aggregate_topics(
     return grouped
 
 
-def _summary_keywords(value: object) -> list[str]:
-    if isinstance(value, (list, tuple, set)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return []
-    text = str(value).strip()
-    if text.startswith("["):
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, list):
-            return [str(item).strip() for item in parsed if str(item).strip()]
-    return [item.strip() for item in text.split(",") if item.strip()]
-
-
-def _normalise_summary_term(value: object) -> str:
-    return " ".join(
-        str(value).casefold().replace("/", " ").split()
-    )
-
-
-def _summary_term_tokens(value: object) -> set[str]:
-    tokens = _normalise_summary_term(value).split()
-    return {
-        token[:-1] if len(token) > 3 and token.endswith("s") else token
-        for token in tokens
-        if token not in {"and", "or", "the"}
-    }
-
-
-def _summary_term_match_score(left: object, right: object) -> int:
-    left_term = _normalise_summary_term(left)
-    right_term = _normalise_summary_term(right)
-    if left_term == right_term:
-        return 100
-
-    left_tokens = _summary_term_tokens(left)
-    right_tokens = _summary_term_tokens(right)
-    shared_tokens = left_tokens & right_tokens
-    if not shared_tokens:
-        return 0
-    if left_tokens.issubset(right_tokens):
-        return 50 + len(left_tokens)
-    if right_tokens.issubset(left_tokens):
-        return 50 + len(right_tokens)
-    return 0
-
-
-def _summary_key_matches_topic(key: object, topic: str) -> bool:
-    return _summary_term_match_score(key, topic) > 0
-
-
-def _summary_value_and_key(
-    value: object,
-    topic: str,
-    keywords: list[str],
-) -> tuple[str, str]:
-    if isinstance(value, str):
-        parsed = None
-        for parser in (json.loads, ast.literal_eval):
-            try:
-                parsed = parser(value)
-                break
-            except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
-                continue
-        if isinstance(parsed, dict):
-            value = parsed
-    if isinstance(value, dict):
-        matching_key = max(
-            (
-                key for key in value
-                if _summary_key_matches_topic(key, topic)
-            ),
-            key=lambda key: _summary_term_match_score(key, topic),
-            default=None,
-        )
-        if matching_key is not None:
-            return str(value[matching_key]).strip(), str(matching_key)
-        try:
-            keyword_index = next(
-                index
-                for index, keyword in enumerate(keywords)
-                if _summary_term_match_score(keyword, topic) > 0
-            )
-        except StopIteration:
-            keyword_index = -1
-        if keyword_index >= 0:
-            numbered_key = f"Topic{keyword_index + 1}"
-            if numbered_key in value:
-                return str(value[numbered_key]).strip(), topic
-        if "Raw_Summary" in value:
-            return str(value["Raw_Summary"]).strip(), topic
-        return "", ""
-    return str(value or "").strip(), topic
-
-
-def _summary_value(value: object, topic: str, keywords: list[str]) -> str:
-    return _summary_value_and_key(value, topic, keywords)[0]
-
-
-@st.cache_data(ttl=600, show_spinner="Loading discussion summaries...")
-def load_topic_summaries(
-    month: pd.Timestamp,
-    countries: list[str],
-    topics: list[str],
-) -> pd.DataFrame:
-    """Return matching topic summaries for each selected country."""
-    summaries = _load_table("summary")
-    required = {"country", "keywords", "summary"}
-    if summaries.empty or not required.issubset(summaries.columns):
-        return pd.DataFrame(columns=["country", "topic", "summary"])
-
-    summaries = summaries.copy()
-    summaries["_month"] = (
-        pd.to_datetime(summaries.get("month"), errors="coerce", utc=True)
-        .dt.tz_localize(None)
-        .dt.to_period("M")
-        .dt.to_timestamp()
-    )
-    summaries["country"] = summaries["country"].astype(str).str.strip()
-    summaries = summaries[
-        (summaries["_month"] == month)
-        & summaries["country"].isin(countries)
-    ]
-
-    requested_topics = [
-        str(topic).strip()
-        for topic in topics
-        if str(topic).strip()
-    ]
-    matches: list[dict[str, str]] = []
-    for row in summaries.itertuples(index=False):
-        keywords = _summary_keywords(getattr(row, "keywords"))
-        for topic in requested_topics:
-            if not any(
-                _summary_term_match_score(keyword, topic) > 0
-                for keyword in keywords
-            ):
-                continue
-            summary, matched_key = _summary_value_and_key(
-                getattr(row, "summary"),
-                topic,
-                keywords,
-            )
-            if (
-                summary
-                and summary.casefold() != "summary could not be generated."
-            ):
-                display_topic = (
-                    topic
-                    if matched_key.casefold().startswith("topic")
-                    else matched_key
-                )
-                matches.append(
-                    {
-                        "country": row.country,
-                        "topic": display_topic,
-                        "summary": summary,
-                    }
-                )
-
-    return pd.DataFrame(
-        matches,
-        columns=["country", "topic", "summary"],
-    ).drop_duplicates(["country", "topic"], keep="first")
-
-
 @st.cache_data(ttl=600, show_spinner="Loading representative posts...")
 def load_representative_posts(
     month: pd.Timestamp,
@@ -313,26 +262,33 @@ def load_representative_posts(
     if posts.empty or not required.issubset(posts.columns):
         return pd.DataFrame()
     posts = posts.copy()
-    timestamp = pd.to_datetime(posts.get("posted_at"), errors="coerce", utc=True)
     country = posts.get(
         "inferred_country", pd.Series(index=posts.index, dtype="object")
-    ).map(
-        lambda value: COUNTRY_ALIASES.get(
-            str(value).strip().upper(), str(value).strip()
-        )
-    )
+    ).map(_normalize_country)
+    # Same posts sentiment_analysis.py scores: environmental ones only.
+    environmental = posts.get(
+        "is_environmental", pd.Series(False, index=posts.index)
+    ).astype(str).str.lower().isin(("true", "1", "t"))
     posts = posts[
-        timestamp.dt.tz_localize(None).dt.to_period("M").dt.to_timestamp().eq(month)
+        _same_month(posts.get("posted_at"), month)
         & country.isin(countries)
+        & environmental
     ].copy()
-    topic_term = topic.casefold()
+    # Match each post against its own country's keywords for this bubble, as
+    # sentiment_analysis.py does; keywords are shared across unrelated topics
+    # in other countries (e.g. "air pollution").
+    terms_by_country = {
+        name: topic_match_terms(month, [name], topic)
+        for name in set(_topic_rows(month, countries, topic)["country"])
+    }
     posts = posts[
-        posts["matched_keywords"].apply(
-            lambda value: topic_term in {
+        [
+            bool(terms_by_country.get(post_country, set()) & {
                 str(item).strip().casefold()
                 for item in (value if isinstance(value, list) else str(value).split(","))
-            }
-        )
+            })
+            for post_country, value in zip(country[posts.index], posts["matched_keywords"])
+        ]
     ]
     posts["total_engagement"] = pd.to_numeric(
         posts["total_engagement"], errors="coerce"
@@ -414,6 +370,98 @@ def _extract_post_url(value: object, platform: str) -> str:
         if url and str(url).strip():
             return str(url).strip()
     return ""
+
+
+def _summary_points(value: object) -> list[tuple[str, str]]:
+    """Turn a stored Gemini summary into (heading, text) pairs; heading may be blank."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = {"Raw_Summary": value}
+    if not isinstance(value, dict):
+        return []
+    raw = value.get("Raw_Summary")
+    if isinstance(raw, str) and len(value) == 1:
+        # Gemini sometimes wraps its JSON in a ```json fence, which the
+        # generator then stores unparsed.
+        unfenced = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+        try:
+            parsed = json.loads(unfenced)
+            value = parsed if isinstance(parsed, dict) else {"Raw_Summary": unfenced}
+        except json.JSONDecodeError:
+            value = {"Raw_Summary": unfenced}
+    points = []
+    for heading, text in value.items():
+        text = str(text or "").strip()
+        if not text:
+            continue
+        # Placeholder keys from the prompt template carry no meaning.
+        generic = re.fullmatch(r"(?i)topic\s*\d+|raw_summary", str(heading).strip())
+        points.append(("" if generic else str(heading).strip(), text))
+    return points
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_month_summaries(month_key: str) -> pd.DataFrame:
+    return _load_table(
+        "summary", "country,topic_name,month,keywords,summary", {"month": f"eq.{month_key}"}
+    )
+
+
+def load_country_summaries(
+    month: pd.Timestamp,
+    countries: list[str],
+    topic: str,
+) -> dict[str, dict[str, object]]:
+    """Gemini discussion summaries for one bubble, keyed by country.
+
+    Each value has "topic" (the bubble the summary's topic is shown under),
+    "shared" (keywords it shares with this bubble; empty for an exact match) and
+    "points". A summary matches exactly when its topic_name is shown under this
+    bubble. A country without one falls back to its summary that
+    shares the most of the bubble's monthly keywords. Keywords are compared rather
+    than the topic name, because registry names can lag behind what a topic
+    covers that month (e.g. a "National Park" topic whose keywords are haze).
+    """
+    summaries = _load_month_summaries(f"{month:%Y-%m-01}")
+    if summaries.empty or not {"country", "topic_name", "summary"}.issubset(summaries.columns):
+        return {}
+    summaries = summaries[
+        summaries["country"].map(_normalize_country).isin(countries)
+    ].assign(
+        country=lambda frame: frame["country"].map(_normalize_country),
+        topic_name=lambda frame: frame["topic_name"].astype(str).str.strip(),
+        summary_keywords=lambda frame: frame.get(
+            "keywords", pd.Series(index=frame.index, dtype=object)
+        ).map(_split_keywords),
+    )
+    summaries["bubble"] = [
+        bubble_name(month, country, name) or name
+        for country, name in zip(summaries["country"], summaries["topic_name"])
+    ]
+    keywords = topic_keywords(month, countries, topic)
+
+    result: dict[str, dict[str, object]] = {}
+    for country, rows in summaries.groupby("country"):
+        exact = rows[rows["bubble"].str.casefold().eq(topic.casefold())]
+        if not exact.empty:
+            points = [point for value in exact["summary"] for point in _summary_points(value)]
+            result[country] = {"topic": topic, "shared": [], "points": points}
+            continue
+        related = [
+            (sorted(row.summary_keywords & keywords), row.bubble, row.summary)
+            for row in rows.itertuples()
+            if row.summary_keywords & keywords
+        ]
+        if related:
+            shared, related_topic, value = min(related, key=lambda item: (-len(item[0]), item[1]))
+            result[country] = {
+                "topic": related_topic,
+                "shared": shared,
+                "points": _summary_points(value),
+            }
+    return result
 
 
 @st.cache_data(ttl=600, show_spinner="Loading sentiment-analysis data...")

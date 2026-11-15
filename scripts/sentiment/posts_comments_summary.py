@@ -5,6 +5,7 @@ import json
 import sys
 import argparse
 import time
+import requests
 from dotenv import load_dotenv
 from google import genai
 from supabase import create_client, Client
@@ -17,6 +18,15 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+
+from scripts.cleaning.clean_social import credentials
+from scripts.sentiment.sentiment_analysis import (
+    fetch_rows_in_window,
+    fetch_topic_lookup,
+    filter_environmental,
+    month_window,
+    row_entries,
+)
 
 # Supabase setup
 url = os.environ.get("SUPABASE_URL", "")
@@ -77,58 +87,27 @@ def get_monthly_keywords(supabase, country, month):
     #     for kw in item['monthly_keywords'].split(',')]
     return list_of_keywords
 
-def fetch_posts_by_country_keyword(supabase, countries, keywords, month):
-    # 1. Parse the year and month
-    year, month_num, _ = month.split('-')
-    y, m = int(year), int(month_num)
-    
-    # 2. Calculate the first day of the NEXT month
-    if m == 12:
-        next_y, next_m = y + 1, 1
-    else:
-        next_y, next_m = y, m + 1
-        
-    start_timestamp = f"{y}-{m:02d}-01T00:00:00+00:00"
-    end_timestamp = f"{next_y}-{next_m:02d}-01T00:00:00+00:00"
+def fetch_topic_texts(month):
+    """
+    Returns {(country, topic_name): [cleaned_text, ...]} for the month.
+    Uses sentiment_analysis.py's own fetching, environmental filter and topic matching
+    (all pages, comments dated by their parent post, case-insensitive keywords) so each
+    summary describes exactly the discussions counted on the dashboard.
+    """
+    base_url, key = credentials()
+    session = requests.Session()
+    start_time, end_time = month_window(month)
+    posts, comments = filter_environmental(
+        session, base_url, key,
+        fetch_rows_in_window(session, base_url, key, "clean_posts", start_time, end_time),
+        fetch_rows_in_window(session, base_url, key, "clean_comments", start_time, end_time),
+    )
+    rows = posts + comments
+    texts = {}
+    for country, topic, text, _, _ in row_entries(rows, fetch_topic_lookup(session, base_url, key)):
+        texts.setdefault((country, topic), []).append(text)
+    return texts
 
-    # 3. Fetch data using list and timestamp filters
-    response = supabase.table('clean_posts') \
-        .select('cleaned_text') \
-        .eq('is_environmental', True) \
-        .in_('inferred_country', countries) \
-        .overlaps('matched_keywords', keywords) \
-        .gte('posted_at', start_timestamp) \
-        .lt('posted_at', end_timestamp) \
-        .execute()
-        
-    return response.data
-
-def fetch_comments_by_country_keyword(supabase, country, keywords, month):
-    # 1. Parse the year and month from your 'YYYY-MM-01' string
-    year, month_num, _ = month.split('-')
-    y, m = int(year), int(month_num)
-    
-    # 2. Calculate the first day of the NEXT month for the strict cutoff
-    if m == 12:
-        next_y, next_m = y + 1, 1
-    else:
-        next_y, next_m = y, m + 1
-        
-    # Format timestamps for Supabase (e.g., 2026-09-01T00:00:00+00:00)
-    start_timestamp = f"{y}-{m:02d}-01T00:00:00+00:00"
-    end_timestamp = f"{next_y}-{next_m:02d}-01T00:00:00+00:00"
-
-    # 3. Use .gte() and .lt() to capture everything inside that month
-    response = supabase.table('clean_comments') \
-        .select('cleaned_text') \
-        .in_('inferred_country', country) \
-        .overlaps('matched_keywords', keywords) \
-        .gte('parent_posted_at', start_timestamp) \
-        .lt('parent_posted_at', end_timestamp) \
-        .execute()
-        
-    return response.data
-    
 def generate_discussion_summary(sample_texts, keywords):
     # Join all comments together. No need to restrict to sample_texts[:5] anymore.
     # ~200 comments will easily fit within Gemini's context window.
@@ -171,6 +150,12 @@ def parse_args():
              "Explicitly specified months are always regenerated. "
              "Defaults to the previous month, skipping summaries that already exist.",
     )
+    parser.add_argument(
+        "--countries",
+        nargs="+",
+        choices=list(COUNTRIES),
+        help="Only summarise these countries (e.g. --countries Malaysia). Defaults to all countries.",
+    )
     return parser.parse_args()
 
 def main():
@@ -180,16 +165,16 @@ def main():
     months = args.months if force else [get_previous_month()]
     for month in months:
         print(f"=== Processing month {month} ===")
-        summarize_month(month, force=force)
+        summarize_month(month, force=force, countries=args.countries)
 
-def summarize_month(month, force=False):
+def summarize_month(month, force=False, countries=None):
     existing = set() if force else get_existing_summaries(supabase, month)
-    for country, country_info in COUNTRIES.items():
-        possible_country_spellings = [country, country_info["regionCode"]]
+    topic_texts = fetch_topic_texts(month)
+    for country in countries or COUNTRIES:
         list_of_keywords = get_monthly_keywords(supabase, country, month)
 
         for row in list_of_keywords:
-            topic_name = row.get("topic_name")
+            topic_name = (row.get("topic_name") or "").strip()
             keyword_string = row.get("monthly_keywords", "")
             keywords_list = [kw.strip() for kw in keyword_string.split(",") if kw.strip()]
 
@@ -200,56 +185,44 @@ def summarize_month(month, force=False):
                 print(f"Skipping {country} [{topic_name}] for {month}: summary already exists.")
                 continue
 
-            comments_data = fetch_comments_by_country_keyword(
-                supabase, 
-                possible_country_spellings, 
-                keywords_list, 
-                month
-            )
-            posts_data = fetch_posts_by_country_keyword(supabase, possible_country_spellings, keywords_list, month)
-            combined_data = (comments_data or []) + (posts_data or [])
-            
-            if combined_data:
-                sample_texts = [item.get('cleaned_text', '') for item in combined_data if item.get('cleaned_text')]
-                
-                if sample_texts:
-                    summary_text = generate_discussion_summary(sample_texts, keywords_list)
+            sample_texts = topic_texts.get((country, topic_name), [])
+            if not sample_texts:
+                print(f"No posts or comments found for {country} [{topic_name}] in {month}.")
+                continue
 
-                    # Don't store a placeholder when Gemini failed; the next run will retry this topic
-                    if summary_text is None:
-                        print(f"Skipping {country} [{topic_name}] for {month}: no summary generated.")
-                        continue
+            summary_text = generate_discussion_summary(sample_texts, keywords_list)
 
-                    # Convert the string from Gemini into a real Python dictionary
-                    try:
-                        summary_dict = json.loads(summary_text)
-                    except json.JSONDecodeError:
-                        summary_dict = {"Raw_Summary": summary_text} # Fallback if Gemini messes up the formatting
+            # Don't store a placeholder when Gemini failed; the next run will retry this topic
+            if summary_text is None:
+                print(f"Skipping {country} [{topic_name}] for {month}: no summary generated.")
+                continue
 
-                    try:
-                        database_response = (
-                            supabase
-                            .table("summary")
-                            .upsert(
-                                # Store the string version of the keywords in the DB
-                                {'country': country, 'topic_name': topic_name, 'keywords': keyword_string, 'month': month, 'summary': summary_dict},
-                                on_conflict="topic_name,country,month"
-                            )
-                            .execute()
-                        )
-            
-                        # RLS can silently block a write, returning no rows instead of raising
-                        if database_response.data:
-                            print(f"Successfully inserted {len(database_response.data)} records")
-                        else:
-                            print(f"No rows written for {country} [{topic_name}] {month}: check RLS insert/update policies on 'summary'.")
-            
-                    except Exception as e:
-                        print(f"Error inserting data: {e}")
+            # Convert the string from Gemini into a real Python dictionary
+            try:
+                summary_dict = json.loads(summary_text)
+            except json.JSONDecodeError:
+                summary_dict = {"Raw_Summary": summary_text} # Fallback if Gemini messes up the formatting
+
+            try:
+                database_response = (
+                    supabase
+                    .table("summary")
+                    .upsert(
+                        # Store the string version of the keywords in the DB
+                        {'country': country, 'topic_name': topic_name, 'keywords': keyword_string, 'month': month, 'summary': summary_dict},
+                        on_conflict="topic_name,country,month"
+                    )
+                    .execute()
+                )
+
+                # RLS can silently block a write, returning no rows instead of raising
+                if database_response.data:
+                    print(f"Successfully inserted {len(database_response.data)} records")
                 else:
-                    print("No valid text found in the fetched posts.")
-            else:
-                print("No posts found matching your criteria.")
+                    print(f"No rows written for {country} [{topic_name}] {month}: check RLS insert/update policies on 'summary'.")
+
+            except Exception as e:
+                print(f"Error inserting data: {e}")
 
 if __name__ == "__main__":
     main()
