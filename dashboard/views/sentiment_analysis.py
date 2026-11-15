@@ -14,7 +14,7 @@ from sentiment_analysis_data import (
     aggregate_topics,
     load_representative_posts,
     load_sentiment,
-    load_topic_summaries,
+    load_country_summaries,
 )
 from style import html_table, kpi_card, style_figure
 
@@ -180,6 +180,29 @@ def _render_topic_insights(
         st.markdown("**Top emotions**")
         st.html(emotion_html)
 
+    summaries = load_country_summaries(month, selected_countries, str(topic["topic"]))
+    # Every country discussing the topic gets a card, plus any country with a
+    # summary but no scored discussions, so no country's view is dropped.
+    summary_countries = list(country_breakdown["Country"]) + sorted(
+        set(summaries) - set(country_breakdown["Country"])
+    )
+    st.markdown("**What each country is saying**")
+    for country in summary_countries:
+        with st.container(border=True):
+            st.markdown(f"**{country}**")
+            match = summaries.get(country, {})
+            points = match.get("points", [])
+            if match.get("shared"):
+                st.caption(
+                    f"No {country} summary for this topic. Showing the related "
+                    f"\"{match['topic']}\" summary, which shares the keywords: "
+                    f"{', '.join(match['shared'])}."
+                )
+            elif not points:
+                st.caption(f"No discussion summary has been generated for {country} yet.")
+            for heading, text in points:
+                st.markdown(f"- **{heading}:** {text}" if heading else f"- {text}")
+
     posts = load_representative_posts(month, selected_countries, str(topic["topic"]))
     st.markdown("**Representative posts — highest-engagement post per platform**")
     if posts.empty:
@@ -297,25 +320,6 @@ event = st.plotly_chart(
     },
     key="sentiment_topic_bubbles",
 )
-
-summary_topics = topics["topic"].astype(str).tolist()
-summaries = load_topic_summaries(
-    selected_month,
-    list(selected_countries),
-    summary_topics,
-)
-with st.expander("What people are saying", expanded=False):
-    for country in selected_countries:
-        with st.container(border=True):
-            st.markdown(f"### {country}")
-            country_summaries = summaries[summaries["country"] == country]
-            if country_summaries.empty:
-                st.caption("No summaries available for the visible topics.")
-            else:
-                for summary in country_summaries.itertuples():
-                    st.markdown(f"**{summary.topic}**")
-                    st.markdown(summary.summary)
-                    st.divider()
 
 selected_points = getattr(getattr(event, "selection", None), "points", [])
 if selected_points:
