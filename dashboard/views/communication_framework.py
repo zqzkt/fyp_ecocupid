@@ -672,6 +672,7 @@ else:
             ["Primary", "Secondary", "Primary (activity fallback)"]
         )
     ]
+    channel_items = []
 
     if fallback:
         chosen = recommended.loc[
@@ -680,21 +681,15 @@ else:
 
         if not chosen.empty:
             item = chosen.iloc[0]
-
-            st.markdown(
-                f"**{str(item['platform']).title()} — provisional Primary channel:** "
+            reasons = [
                 f"This platform has the highest observed posting activity for "
                 f"environmental content in {country} during the selected period "
-                f"({int(item['post_count']):,} original posts). "
+                f"({int(item['post_count']):,} original posts).",
                 "The available data did not satisfy the normal channel-selection "
                 "rules, so this is a practical starting point rather than "
-                "evidence of stronger audience engagement."
-            )
-
-            st.write(
-                "**Why no Secondary?** There is not enough supporting evidence "
-                "to recommend an additional channel confidently."
-            )
+                "evidence of stronger audience engagement.",
+            ]
+            channel_items.append(("Provisional Primary", item, reasons))
 
     elif recommended.empty:
         st.info(
@@ -705,83 +700,91 @@ else:
     else:
         eligible = summary.loc[summary["eligible"]].copy()
 
-        for _, item in recommended.iterrows():
-            platform = str(item["platform"])
-            role = str(item["recommendation"])
-
-            others = eligible.loc[
-                eligible["platform"] != platform
+        for role in ("Primary", "Secondary"):
+            role_items = recommended.loc[
+                recommended["recommendation"] == role
             ]
+            for _, item in role_items.iterrows():
+                platform = str(item["platform"])
+                others = eligible.loc[
+                    eligible["platform"] != platform
+                ]
 
-            reasons = [
-                f"{platform.title()} has at least 30 original environmental posts "
-                f"from {country} in the selected period, allowing its audience "
-                "engagement to be compared with other eligible channels."
-            ]
+                reasons = [
+                    f"{platform.title()} has at least 30 original environmental posts "
+                    f"from {country} in the selected period, allowing its audience "
+                    "engagement to be compared with other eligible channels."
+                ]
 
-            if not others.empty:
-                typical = float(item["median_post_engagement"])
-                other_median = float(
-                    others["median_post_engagement"].median()
-                )
+                if not others.empty:
+                    typical = float(item["median_post_engagement"])
+                    other_median = float(
+                        others["median_post_engagement"].median()
+                    )
 
-                if typical > other_median:
+                    if typical > other_median:
+                        reasons.append(
+                            "Its typical posts show comparatively stronger engagement."
+                        )
+                    else:
+                        reasons.append(
+                            "Its engagement remains competitive across the observed posts."
+                        )
+
+                if float(item["iqr"]) <= float(eligible["iqr"].median()):
                     reasons.append(
-                        "Its typical posts show comparatively stronger engagement."
+                        "Engagement is relatively consistent across posts."
                     )
                 else:
                     reasons.append(
-                        "Its engagement remains competitive across the observed posts."
+                        "Performance varies between posts, with potential "
+                        "for standout content."
                     )
 
-            if float(item["iqr"]) <= float(eligible["iqr"].median()):
-                reasons.append(
-                    "Engagement is relatively consistent across posts."
-                )
-            else:
-                reasons.append(
-                    "Performance varies between posts, with potential "
-                    "for standout content."
+                if role == "Primary":
+                    reasons.append(
+                        "It has the strongest overall supporting evidence across the "
+                        "engagement distribution; this is not based on posting volume alone."
+                    )
+                else:
+                    reasons.append(
+                        "It offers a competitive alternative or complementary channel."
+                    )
+
+                discussion = float(item.get("replies", 0))
+                sharing = (
+                    float(item.get("reposts", 0))
+                    + float(item.get("quotes", 0))
                 )
 
-            if role == "Primary":
-                reasons.append(
-                    "It has the strongest overall supporting evidence across the "
-                    "engagement distribution; this is not based on posting volume alone."
-                )
-            else:
-                reasons.append(
-                    "It offers a competitive alternative or complementary channel."
-                )
+                if discussion > sharing and discussion > 0:
+                    reasons.append(
+                        "Audience replies suggest opportunities for discussion."
+                    )
+                elif sharing > 0:
+                    reasons.append(
+                        "Sharing activity suggests opportunities for message amplification."
+                    )
 
-            discussion = float(item.get("replies", 0))
-            sharing = (
-                float(item.get("reposts", 0))
-                + float(item.get("quotes", 0))
+                channel_items.append((role, item, reasons))
+
+    for role, item, reasons in channel_items:
+        with st.container(border=True):
+            st.markdown(
+                f"**{role} channel: {str(item['platform']).title()}**"
             )
+            for reason in reasons:
+                st.write(reason)
 
-            if discussion > sharing and discussion > 0:
-                reasons.append(
-                    "Audience replies suggest opportunities for discussion."
-                )
-            elif sharing > 0:
-                reasons.append(
-                    "Sharing activity suggests opportunities for message amplification."
-                )
-
-            with st.container(border=True):
-                st.markdown(
-                    f"**{role} channel: {platform.title()}**"
-                )
-
-                for reason in reasons:
-                    st.write(reason)
-
-        if primary and not secondary:
-            st.write(
-                "**Why no Secondary?** No other channel had sufficiently "
-                "competitive supporting evidence to justify a separate recommendation."
-            )
+    if primary and not secondary:
+        no_secondary_reason = (
+            "The activity fallback assigns only a Primary channel; it does not "
+            "recommend a Secondary channel."
+            if fallback
+            else "No other channel had sufficiently competitive supporting "
+            "evidence to justify a separate recommendation."
+        )
+        st.write(f"**Why no Secondary?** {no_secondary_reason}")
 
 
 # ============================================================
