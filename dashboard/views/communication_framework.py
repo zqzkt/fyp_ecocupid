@@ -29,6 +29,7 @@ from scripts.communication_framework.channel_recommendations import (
     normalize_country,
     recommend_channels,
 )
+from style import CARD_BG, HAIRLINE, series_color, text_color, theme
 
 COUNTRIES = [
     "Brunei", "Indonesia", "Malaysia",
@@ -60,6 +61,31 @@ st.markdown("""<style>
 .ec-report-step-title {flex:0 0 100px;box-sizing:border-box;text-align:center;background:#e3f0e3;border-radius:10px;padding:13px 8px;font-size:1rem;font-weight:750;color:#236a47}
 .ec-report-step-text {flex:1;font-size:.96rem;color:#38483c;line-height:1.6;padding-top:9px;white-space:pre-wrap}
 .ec-report-warning {background:#f5f2e8;border-left:4px solid #a3a278;padding:13px 17px;border-radius:8px}
+.ec-channel {min-height:150px}
+.ec-chips {display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0 !important;padding:0 !important;list-style:none}
+.ec-chips li {background:rgba(255,255,255,.7);border:1px solid #b7d3bc;color:#214b35;border-radius:999px;
+  padding:3px 11px;font-size:.82rem;font-weight:600;margin:0 !important}
+.ec-outcome {display:inline-block;font-size:.82rem;font-weight:700;color:#214b35;background:#e8f3e7;
+  border:1px solid #d5e4d2;border-radius:999px;padding:3px 12px;margin:10px 0 4px}
+.ec-tone {font-size:.95rem;color:#38483c;margin:4px 0 10px}
+</style>""", unsafe_allow_html=True)
+
+# The styles above are tuned for light mode; swap to the dark theme's surfaces
+# and light text in dark mode so cards and the report stay readable.
+if theme() == "dark":
+    _text, _brand = text_color(), series_color()
+    _muted, _line = "rgba(240,237,230,.72)", HAIRLINE["dark"]
+    st.markdown(f"""<style>
+.ec-channel, .ec-channel.secondary, .ec-channel.neutral, .ec-report-header, .ec-report-key,
+.ec-report-step-title, .ec-outcome {{background:{CARD_BG['dark']};border-color:{_line}}}
+.ec-channel, .ec-report-key {{border-left-color:{_brand}}}
+.ec-channel.secondary {{border-left-color:#5c8e48}}
+.ec-channel.neutral {{border-left-color:#8a8a86}}
+.ec-name, .ec-report-title, .ec-report-key-text, .ec-report-step-text, .ec-outcome, .ec-tone {{color:{_text}}}
+.ec-role, .ec-report-kicker, .ec-report-meta, .ec-report-key-label {{color:{_muted}}}
+.ec-report-step-title {{color:{_brand}}}
+.ec-report-step {{border-bottom-color:{_line}}}
+.ec-chips li {{background:rgba(172,209,71,.12);border-color:rgba(172,209,71,.35);color:{_text}}}
 </style>""", unsafe_allow_html=True)
 
 
@@ -75,18 +101,37 @@ def _safe(value, fallback="Not available") -> str:
     return text if text else fallback
 
 
-def _card(role: str, name: str | None, secondary=False) -> None:
-    import html
-
+def _card(role: str, name: str | None, secondary=False, chips: list[str] | None = None) -> None:
     css = "secondary" if secondary else ("neutral" if not name else "")
     shown = name or ("Not recommended" if secondary else "No clear primary")
+    chip_html = "".join(f"<li>{html.escape(c)}</li>" for c in (chips or []))
 
     st.html(
         f'<div class="ec-channel {css}">'
         f'<div class="ec-role">{html.escape(role)}</div>'
-        f'<div class="ec-name">{html.escape(shown)}</div>'
-        f'</div>'
+        f'<div class="ec-name">{html.escape(shown.title() if name else shown)}</div>'
+        + (f'<ul class="ec-chips">{chip_html}</ul>' if chip_html else "")
+        + '</div>'
     )
+
+
+def _channel_reasons(item: pd.Series, eligible: pd.DataFrame) -> list[str]:
+    """Short reason tags for a recommended channel (same rules as before, fewer words)."""
+    reasons = ["30+ local posts"]
+    others = eligible.loc[eligible["platform"] != item["platform"]]
+    if not others.empty:
+        stronger = float(item["median_post_engagement"]) > float(others["median_post_engagement"].median())
+        reasons.append("Stronger typical engagement" if stronger else "Competitive engagement")
+    if not eligible.empty:
+        consistent = float(item["iqr"]) <= float(eligible["iqr"].median())
+        reasons.append("Consistent results" if consistent else "Room for standout posts")
+    discussion = float(item.get("replies", 0))
+    sharing = float(item.get("reposts", 0)) + float(item.get("quotes", 0))
+    if discussion > sharing and discussion > 0:
+        reasons.append("Sparks discussion")
+    elif sharing > 0:
+        reasons.append("Gets shared")
+    return reasons
 
 
 @st.cache_data(ttl=600, show_spinner="Loading saved messaging guidance...")
@@ -342,22 +387,19 @@ def _story_stage_parts(step: str, index: int) -> tuple[str, str]:
 
 def _show_guidance(record: pd.Series, selected_country: str,
                    posts: pd.DataFrame, monthly_topics: pd.DataFrame) -> None:
-    """Five-section report; WHERE and Why These Channels remain unchanged."""
+    """Messaging report: key message up front, details split into tabs."""
     topic = html.escape(str(record.get("topic_name") or "Environmental topic"))
     country = html.escape(selected_country)
     month = pd.Timestamp(record["_month"]).strftime("%B %Y")
 
     st.html(
         '<div class="ec-report-header">'
-        '<div class="ec-report-kicker">EcoCupid / Communication Framework</div>'
-        '<div class="ec-report-title">Messaging Strategy Report</div>'
-        f'<div class="ec-report-meta">{country} · {html.escape(month)} · {topic}</div>'
+        '<div class="ec-report-kicker">Messaging Strategy</div>'
+        f'<div class="ec-report-title">{topic}</div>'
+        f'<div class="ec-report-meta">{country} · {html.escape(month)}</div>'
         '</div>'
     )
 
-    # 01: The core message and desired delivery style.
-    st.markdown('<div class="ec-report-section">01 / Communication Objective</div>',
-                unsafe_allow_html=True)
     key_message = _safe(record.get("key_message"), "")
     if key_message:
         st.html(
@@ -366,100 +408,87 @@ def _show_guidance(record: pd.Series, selected_country: str,
             f'<div class="ec-report-key-text">{html.escape(key_message)}</div>'
             '</div>'
         )
-    _report_field(record, "tone_and_emotion", "Recommended tone and emotion")
+    tone = _report_items(record.get("tone_and_emotion"))
+    if tone:
+        st.html(f'<div class="ec-tone"><b>Tone:</b> {html.escape(" · ".join(tone))}</div>')
 
-    st.divider()
-    # 02: Production guidance, followed by a step-by-step storyline.
-    st.markdown('<div class="ec-report-section">02 / Content & Storytelling Strategy</div>',
-                unsafe_allow_html=True)
-    left, right = st.columns(2, gap="medium")
-    with left:
-        with st.container(border=True):
-            _report_field(record, "content_type", "Content format")
-    with right:
-        with st.container(border=True):
-            _report_field(record, "narrative_method", "Narrative approach")
+    content_tab, copy_tab, dos_tab, sources_tab = st.tabs(
+        ["🎬 Content & story", "✍️ Hooks & captions", "✅ Do's & don'ts", "🔗 Source posts"]
+    )
 
-    
-    steps = _story_steps(record.get("story_structure"))
+    with content_tab:
+        left, right = st.columns(2, gap="medium")
+        with left:
+            with st.container(border=True):
+                _report_field(record, "content_type", "Content format")
+        with right:
+            with st.container(border=True):
+                _report_field(record, "narrative_method", "Narrative approach")
 
-    if steps:
-        st.markdown("**Suggested video structure**")
-
-        for i, step in enumerate(steps, 1):
-
-            timestamp, description = _story_stage_parts(step, i)
-
-            st.html(
-                '<div class="ec-report-step">'
-                f'<div class="ec-report-step-title">{html.escape(timestamp.strip())}</div>'
-                f'<div class="ec-report-step-text">{html.escape(description.strip())}</div>'
-                '</div>'
-            )
-
-
-    st.divider()
-    # 03: Copyable examples and instructions for posting.
-    st.markdown('<div class="ec-report-section">03 / Ready-to-Use Messaging</div>',
-                unsafe_allow_html=True)
-    hooks = _report_items(record.get("hooks"))
-    if hooks:
-        st.markdown("**Suggested opening hooks**")
-        for i, hook in enumerate(hooks, 1):
-            st.markdown(f"**{i}.** {hook}")
-    _report_field(record, "call_to_action", "Call to action")
-    _report_field(record, "captions", "Caption guidance")
-
-    st.divider()
-    # 04: Practical do's and don'ts.
-    st.markdown('<div class="ec-report-section">04 / Actionable Recommendations</div>',
-                unsafe_allow_html=True)
-    recommendations = _report_items(record.get("recommendations"))
-    if recommendations:
-        for item in recommendations:
-            st.markdown(f"- ✅ {item}")
-    avoid = _report_items(record.get("what_not_to_do"))
-    if avoid:
-        with st.container(border=True):
-            st.markdown("**What to avoid**")
-            for item in avoid:
-                st.write(item)
-
-    st.divider()
-    # 05: Existing country-attributed example links and conditional disclaimer.
-    st.markdown('<div class="ec-report-section">05 / Supporting Source Posts</div>',
-                unsafe_allow_html=True)
-    st.caption("Posts that informed the saved messaging analysis. Country labels are based on the collected data.")
-    links = []
-    for field in ("top_post_links", "bottom_post_links"):
-        links.extend(_example_links(record.get(field)))
-    links = list(dict.fromkeys(links))[:10]
-
-    if links:
-        countries_by_url = _example_country_map(posts)
-        local_count = _local_topic_post_count(record, selected_country, posts, monthly_topics)
-        with st.expander(f"Example source posts ({len(links)})", expanded=False):
-            if local_count is not None and local_count < 20:
-                st.info(
-                    f"**Limited local data:** Only {local_count} relevant posts "
-                    f"were found for this topic in {selected_country} during "
-                    f"{record['_month']:%B %Y} (minimum: 20). "
-                    "The messaging analysis may therefore use relevant posts "
-                    "from other ASEAN countries. Regional examples may not "
-                    "fully reflect local audience preferences."
+        steps = _story_steps(record.get("story_structure"))
+        if steps:
+            st.markdown("**Suggested video structure**")
+            for i, step in enumerate(steps, 1):
+                timestamp, description = _story_stage_parts(step, i)
+                st.html(
+                    '<div class="ec-report-step">'
+                    f'<div class="ec-report-step-title">{html.escape(timestamp.strip())}</div>'
+                    f'<div class="ec-report-step-text">{html.escape(description.strip())}</div>'
+                    '</div>'
                 )
-            for i, link in enumerate(links, 1):
-                source_country = countries_by_url.get(_post_url_key(link))
-                if source_country is None:
-                    label = "Country unknown"
-                elif source_country == selected_country:
-                    label = "Local example"
-                else:
-                    label = "Regional example"
-                st.markdown(f"**{i}. {label}**")
-                st.markdown(f"[View source post]({link})")
-    else:
-        st.caption("No supporting source links were saved for this topic.")
+
+    with copy_tab:
+        hooks = _report_items(record.get("hooks"))
+        if hooks:
+            st.markdown("**Opening hooks**")
+            for i, hook in enumerate(hooks, 1):
+                st.markdown(f"**{i}.** {hook}")
+        _report_field(record, "call_to_action", "Call to action")
+        _report_field(record, "captions", "Caption guidance")
+
+    with dos_tab:
+        do_col, dont_col = st.columns(2, gap="medium")
+        with do_col:
+            with st.container(border=True):
+                st.markdown("**Do**")
+                for item in _report_items(record.get("recommendations")) or ["Not available"]:
+                    st.markdown(f"✅ {item}")
+        with dont_col:
+            with st.container(border=True):
+                st.markdown("**Avoid**")
+                for item in _report_items(record.get("what_not_to_do")) or ["Not available"]:
+                    st.markdown(f"❌ {item}")
+
+    with sources_tab:
+        links = []
+        for field in ("top_post_links", "bottom_post_links"):
+            links.extend(_example_links(record.get(field)))
+        links = list(dict.fromkeys(links))[:10]
+
+        if not links:
+            st.caption("No supporting source links were saved for this topic.")
+            return
+
+        st.caption("Posts that informed this guidance. Country labels come from the collected data.")
+        local_count = _local_topic_post_count(record, selected_country, posts, monthly_topics)
+        if local_count is not None and local_count < 20:
+            st.info(
+                f"**Limited local data:** only {local_count} relevant posts from "
+                f"{selected_country} in {record['_month']:%B %Y} (minimum 20), so this "
+                "guidance may draw on posts from other ASEAN countries."
+            )
+        countries_by_url = _example_country_map(posts)
+        lines = []
+        for i, link in enumerate(links, 1):
+            source_country = countries_by_url.get(_post_url_key(link))
+            if source_country is None:
+                label = "Country unknown"
+            elif source_country == selected_country:
+                label = "Local example"
+            else:
+                label = "Regional example"
+            lines.append(f"{i}. [{label}]({link})")
+        st.markdown("\n".join(lines))
 
 
 # ============================================================
@@ -601,244 +630,97 @@ else:
 
 
 # ============================================================
-# 1. RECOMMENDED CHANNELS
+# 1. WHERE TO COMMUNICATE
 # ============================================================
 
-st.subheader("1. Recommended Channels")
-
-st.caption(
-    "Based on environmental post engagement distributions, "
-    "data sufficiency and statistical evidence. "
-    "Where those rules cannot identify a Primary Channel, a "
-    "posting-activity fallback may be shown."
-)
+st.subheader("1. Where to communicate")
+st.caption("Chosen by comparing engagement on local environmental posts. "
+           "A platform needs 30+ posts to qualify.")
 
 primary = evidence.get("primary_channel")
 secondary = evidence.get("secondary_channel")
+status = evidence.get("analysis_status", "Inconclusive")
+fallback = bool(evidence.get("used_activity_fallback", False))
+
+# Short reason tags per role, using the same rules as the old paragraphs.
+reasons: dict[str, list[str]] = {}
+if not summary.empty:
+    eligible = summary.loc[summary["eligible"]].copy()
+    for _, item in summary.iterrows():
+        rec = str(item["recommendation"])
+        if rec in ("Primary", "Secondary"):
+            reasons[rec] = _channel_reasons(item, eligible)
+        elif rec == "Primary (activity fallback)":
+            reasons["Primary"] = [f"Most posts ({int(item['post_count']):,})", "Limited data"]
+
+# Matches main's "Why no Secondary?" wording: the activity fallback only ever
+# assigns a Primary channel, otherwise no other channel had enough evidence.
+if reasons.get("Secondary"):
+    secondary_chips = reasons["Secondary"]
+elif primary and fallback:
+    secondary_chips = ["Fallback assigns a primary only"]
+elif primary:
+    secondary_chips = ["Not enough evidence for a second channel"]
+else:
+    secondary_chips = []
 
 a, b = st.columns(2, gap="medium")
-
 with a:
-    _card("Primary channel", primary)
-
+    _card("Primary channel", primary, chips=reasons.get("Primary", []))
 with b:
-    _card("Secondary channel", secondary, secondary=True)
+    _card("Secondary channel", secondary, secondary=True, chips=secondary_chips)
 
-status = evidence.get("analysis_status", "Inconclusive")
-
-st.markdown(f"**Analysis outcome:** {status}")
-st.write(evidence.get("explanation", "No explanation available."))
-
-if evidence.get("used_activity_fallback", False):
-    st.warning(
-        "**Limited-data recommendation:** This Primary channel did not pass the "
-        "normal recommendation rules. It is suggested only because it has the "
-        "most observed environmental posts in the selected country and period. "
-        "Posting frequency does not demonstrate superior engagement."
-    )
-
-if status in (
-    "Inconclusive",
-    "Insufficient comparison",
-    "Insufficient data"
-):
-    st.info(
-        "The available evidence does not justify naming a clear winning channel. "
-        "Comparable candidates are shown below where available."
-    )
-
-
-# ============================================================
-# 2. WHY THESE CHANNELS?
-# ============================================================
-
-st.subheader("2. Why these channels?")
-
-st.caption(
-    "An explanation of the recommended channels, "
-    "based on relevant audience engagement and supporting evidence."
-)
+st.html(f'<span class="ec-outcome">Outcome: {html.escape(str(status))}</span>')
 
 if summary.empty:
-    st.info(
-        "No environmental original posts were found for the selected "
-        "country and period."
+    st.info("No environmental original posts were found for this country and period.")
+elif fallback:
+    st.warning(
+        "**Limited data:** the primary channel is suggested because it has the most "
+        "environmental posts, not because it has shown stronger engagement."
     )
-else:
-    fallback = bool(evidence.get("used_activity_fallback", False))
+elif status in ("Inconclusive", "Insufficient comparison", "Insufficient data"):
+    st.info("**No clear winner:** the evidence doesn't separate the channels enough to name one.")
 
-    recommended = summary.loc[
-        summary["recommendation"].isin(
-            ["Primary", "Secondary", "Primary (activity fallback)"]
-        )
-    ]
-    channel_items = []
-
-    if fallback:
-        chosen = recommended.loc[
-            recommended["recommendation"] == "Primary (activity fallback)"
-        ]
-
-        if not chosen.empty:
-            item = chosen.iloc[0]
-            reasons = [
-                f"This platform has the highest observed posting activity for "
-                f"environmental content in {country} during the selected period "
-                f"({int(item['post_count']):,} original posts).",
-                "The available data did not satisfy the normal channel-selection "
-                "rules, so this is a practical starting point rather than "
-                "evidence of stronger audience engagement.",
-            ]
-            channel_items.append(("Provisional Primary", item, reasons))
-
-    elif recommended.empty:
-        st.info(
-            "The current evidence does not clearly distinguish a Primary channel. "
-            "No platform is being presented as an engagement leader."
-        )
-
-    else:
-        eligible = summary.loc[summary["eligible"]].copy()
-
-        for role in ("Primary", "Secondary"):
-            role_items = recommended.loc[
-                recommended["recommendation"] == role
-            ]
-            for _, item in role_items.iterrows():
-                platform = str(item["platform"])
-                others = eligible.loc[
-                    eligible["platform"] != platform
-                ]
-
-                reasons = [
-                    f"{platform.title()} has at least 30 original environmental posts "
-                    f"from {country} in the selected period, allowing its audience "
-                    "engagement to be compared with other eligible channels."
-                ]
-
-                if not others.empty:
-                    typical = float(item["median_post_engagement"])
-                    other_median = float(
-                        others["median_post_engagement"].median()
-                    )
-
-                    if typical > other_median:
-                        reasons.append(
-                            "Its typical posts show comparatively stronger engagement."
-                        )
-                    else:
-                        reasons.append(
-                            "Its engagement remains competitive across the observed posts."
-                        )
-
-                if float(item["iqr"]) <= float(eligible["iqr"].median()):
-                    reasons.append(
-                        "Engagement is relatively consistent across posts."
-                    )
-                else:
-                    reasons.append(
-                        "Performance varies between posts, with potential "
-                        "for standout content."
-                    )
-
-                if role == "Primary":
-                    reasons.append(
-                        "It has the strongest overall supporting evidence across the "
-                        "engagement distribution; this is not based on posting volume alone."
-                    )
-                else:
-                    reasons.append(
-                        "It offers a competitive alternative or complementary channel."
-                    )
-
-                discussion = float(item.get("replies", 0))
-                sharing = (
-                    float(item.get("reposts", 0))
-                    + float(item.get("quotes", 0))
-                )
-
-                if discussion > sharing and discussion > 0:
-                    reasons.append(
-                        "Audience replies suggest opportunities for discussion."
-                    )
-                elif sharing > 0:
-                    reasons.append(
-                        "Sharing activity suggests opportunities for message amplification."
-                    )
-
-                channel_items.append((role, item, reasons))
-
-    for role, item, reasons in channel_items:
-        with st.container(border=True):
-            st.markdown(
-                f"**{role} channel: {str(item['platform']).title()}**"
-            )
-            for reason in reasons:
-                st.write(reason)
-
-    if primary and not secondary:
-        no_secondary_reason = (
-            "The activity fallback assigns only a Primary channel; it does not "
-            "recommend a Secondary channel."
-            if fallback
-            else "No other channel had sufficiently competitive supporting "
-            "evidence to justify a separate recommendation."
-        )
-        st.write(f"**Why no Secondary?** {no_secondary_reason}")
-
-
-# ============================================================
-# DATA COVERAGE
-# ============================================================
-
-with st.expander("Data coverage and recommendation limitations"):
-
-    st.write(
-        "Environmental posts in the selected country and period: "
-        f"{evidence.get('environmental_posts_in_country_period', 0):,}."
+with st.expander("How this was decided"):
+    st.write(evidence.get("explanation", "No explanation available."))
+    st.markdown(
+        "**Environmental original posts analysed:** "
+        f"{evidence.get('environmental_posts_in_country_period', 0):,}"
     )
-
-    st.write(
-        "Original environmental posts used for channel analysis: "
-        f"{evidence.get('environmental_posts_in_country_period', 0):,}."
-    )
-
-    st.write(
-        "WHERE uses all environmental original posts from the selected country "
-        "and period, not only the top-three news topics. The 30-post minimum "
-        "applies to the normal recommendation rules. Linked comment reactions "
-        "can contribute to engagement, but comments do not count as original posts. "
-        "The top-three monthly topics are used separately for HOW guidance."
-    )
-
     if not summary.empty:
-        for _, item in summary.iterrows():
-            st.write(
-                f"{item['platform']}: "
-                f"{int(item['post_count']):,} environmental original posts "
-                f"({'eligible' if item['eligible'] else 'below the 30-post minimum'})."
-            )
+        coverage = summary[["platform", "post_count", "eligible"]].copy()
+        coverage["platform"] = coverage["platform"].astype(str).str.title()
+        coverage["eligible"] = coverage["eligible"].map({True: "Yes", False: "No (under 30)"})
+        st.dataframe(
+            coverage.rename(columns={
+                "platform": "Platform",
+                "post_count": "Original posts",
+                "eligible": "Qualifies",
+            }),
+            hide_index=True,
+            use_container_width=True,
+        )
+    st.caption(
+        "Uses all environmental original posts from the selected country and period, "
+        "not only the top-three news topics. Comment reactions count towards engagement, "
+        "but comments are not counted as posts."
+    )
 
 
 # ============================================================
-# 3. HOW TO COMMUNICATE?
+# 2. HOW TO COMMUNICATE
 # ============================================================
 
-st.subheader("3. How to communicate?")
-
-st.caption(
-    "AI-generated messaging guidance based on contrasting "
-    "high- and low-engagement posts. "
-    "This guidance is separate from the statistical channel selection."
-)
+st.subheader("2. How to communicate")
+st.caption("AI-generated guidance for short-form vertical video (TikTok / Instagram Reels), "
+           "based on what separated high- and low-engagement posts.")
 
 try:
     guidance = _load_guidance()
 except CommunicationChannelsDataError as exc:
     guidance = pd.DataFrame()
-    st.warning(
-        f"Saved messaging guidance could not be loaded: {exc}"
-    )
+    st.warning(f"Saved messaging guidance could not be loaded: {exc}")
 
 names = (
     set(topics["topic_name"].dropna().astype(str))
@@ -846,52 +728,29 @@ names = (
     else set()
 )
 
-relevant = _guidance_rows(
-    guidance,
-    country,
-    start,
-    end,
-    names
-)
+relevant = _guidance_rows(guidance, country, start, end, names)
 
 if relevant.empty:
     st.info(
-        "No saved topic-based messaging guidance matches the selected "
-        "country's top-three topics and months. "
-        "The topic_based_analysis.py batch job must generate and store "
-        "those results first. Its current upsert may overwrite "
-        "earlier months for the same country and topic."
+        "No saved messaging guidance matches this country's top topics for the "
+        "selected months. Run `topic_based_analysis.py` to generate it "
+        "(re-running may overwrite earlier months for the same topic)."
     )
-
 else:
     options = [
         f"{r['_month']:%b %Y} · {r['topic_name']}"
         for _, r in relevant.iterrows()
     ]
-
-    selected = st.selectbox(
-        "Topic guidance",
-        options,
-        key="cf_guidance_topic"
-    )
-
+    selected = st.selectbox("Topic", options, key="cf_guidance_topic")
     record = relevant.iloc[options.index(selected)]
-
-    st.caption(
-        "Messaging guidance targets short-form vertical videos "
-        "(TikTok / Instagram Reels), even when the recommended "
-        "engagement channel is different. "
-        "The generator can use regional posts when fewer than "
-        "20 matching country posts exist. Example source countries "
-        "and local-data sufficiency are checked below."
-    )
 
     _show_guidance(
         record,
         selected_country=country,
         posts=data["posts"],
-        monthly_topics=data["monthly_topics"]
+        monthly_topics=data["monthly_topics"],
     )
+
 
 # ============================================================
 # METHODOLOGY
