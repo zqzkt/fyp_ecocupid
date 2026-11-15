@@ -118,9 +118,13 @@ def _guidance_rows(
 
     names = {name.casefold() for name in topic_names}
 
+    # topic_based_analysis.py upserts on (topic_name, country), so a topic that
+    # recurs in a later month only keeps its latest analysis, stamped with that
+    # month. Match on country and topic alone (topic_names already holds the
+    # selected period's top-three topics) so those topics still get guidance;
+    # the options label shows which month the analysis comes from.
     g = g[
         (g["_country"] == country)
-        & g["_month"].between(start, end)
         & g["topic_name"].fillna("").astype(str).str.casefold().isin(names)
     ].copy()
 
@@ -873,6 +877,13 @@ else:
     )
 
     record = relevant.iloc[options.index(selected)]
+
+    if not start <= record["_month"] <= end:
+        st.caption(
+            f"This guidance is from {record['_month']:%B %Y}, the latest month "
+            f"{record['topic_name']} was analysed for {country}; only the most "
+            "recent analysis of each topic is stored."
+        )
 
     st.caption(
         "Messaging guidance targets short-form vertical videos "
