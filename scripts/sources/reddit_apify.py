@@ -1,5 +1,5 @@
 from apify_client import ApifyClient
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote_plus
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import pandas as pd
@@ -48,7 +48,13 @@ print(f"Collecting posts and comments from {posted_after} through {posted_before
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-from scripts.supabase.reddit_pipeline import topic_keyword_groups
+from scripts.supabase.reddit_pipeline import keyword_in_text, topic_keyword_groups
+
+
+def normalized_url(url):
+    """Compare search URLs regardless of encoding, case and trailing slash."""
+    return unquote_plus(str(url or "")).strip().rstrip("/").casefold()
+
 
 keyword_groups = topic_keyword_groups(previous_month_start.isoformat())
 start_urls = []
@@ -90,7 +96,7 @@ for country, requests_for_country in country_requests.items():
         "postedBefore": posted_before,
     }
     search_requests_by_url = {
-        request["url"]: request
+        normalized_url(request["url"]): request
         for request in requests_for_country
     }
 
@@ -141,8 +147,10 @@ for country, requests_for_country in country_requests.items():
             or item.get("sourceUrl")
             or item.get("startUrl")
         )
-        search_request = search_requests_by_url.get(source_url)
+        search_request = search_requests_by_url.get(normalized_url(source_url))
         if search_request is None:
+            # The actor doesn't reliably echo the search URL; the keyword is
+            # recovered from the post text during extraction below.
             search_request = {"topic": None, "country": country}
         result_items.append((
             item,
@@ -190,7 +198,10 @@ for item, topic, country in result_items:
             "score": item.get("score"),
             "upvote_ratio": item.get("upvoteRatio"),
             "domain": item.get("domain"),
-            "topic": topic,
+            "topic": topic or keyword_in_text(
+                f"{item.get('title') or ''} {item.get('body') or ''}",
+                keyword_groups.get(country, []),
+            ),
             "country": country,
         })
 
@@ -238,15 +249,21 @@ for item, topic, country in result_items:
 # CREATE DATAFRAMES
 # =====================================================
 
-# Comments use the country assigned to their linked post, even when the
-# scraper returned the comment as a separate top-level item.
+# Comments use the country and keyword assigned to their linked post, even
+# when the scraper returned the comment as a separate top-level item.
 post_country_by_id = {
     row["post_id"]: row.get("country")
     for row in posts_data
     if row.get("post_id")
 }
+post_topic_by_id = {
+    row["post_id"]: row.get("topic")
+    for row in posts_data
+    if row.get("post_id")
+}
 for comment in comments_data:
     comment["country"] = post_country_by_id.get(comment.get("post_id"), comment.get("country"))
+    comment["topic"] = comment.get("topic") or post_topic_by_id.get(comment.get("post_id"))
 
 posts_df = pd.DataFrame(posts_data)
 comments_df = pd.DataFrame(comments_data)
