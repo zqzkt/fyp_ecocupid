@@ -188,10 +188,16 @@ def _render_topic_insights(
     )
     st.markdown("**What each country is saying**")
     for country in summary_countries:
-        with st.container(border=True):
-            st.markdown(f"**{country}**")
-            match = summaries.get(country, {})
-            points = match.get("points", [])
+        match = summaries.get(country, {})
+        points = match.get("points", [])
+        if match.get("shared"):
+            hint = "related topic summary"
+        elif points:
+            hint = f"{len(points)} point{'s' if len(points) != 1 else ''}"
+        else:
+            hint = "no summary yet"
+        # Collapsed by default so the panel stays short; open a country to read it.
+        with st.expander(f"{country} · {hint}", expanded=False):
             if match.get("shared"):
                 st.caption(
                     f"No {country} summary for this topic. Showing the related "
@@ -209,15 +215,15 @@ def _render_topic_insights(
         st.caption("No matching clean posts with engagement data were found.")
     else:
         for post in posts.itertuples():
-            platform = getattr(post, "platform", "Unknown")
-            with st.container(border=True):
-                st.markdown(f"**{platform or 'Unknown'}**")
+            platform = getattr(post, "platform", "Unknown") or "Unknown"
+            engagements = int(post.total_engagement)
+            label = f"{platform} · {engagements:,} engagement{'s' if engagements != 1 else ''}"
+            with st.expander(label, expanded=False):
                 caption = str(post.cleaned_text)
                 words = caption.split()
                 if len(words) > 300:
                     caption = " ".join(words[:300]) + " ..."
                 st.markdown(caption)
-                st.caption(f"Total engagement: {int(post.total_engagement):,}")
                 post_url = str(getattr(post, "post_url", "") or "").strip()
                 st.link_button(
                     "Link to original post →",
