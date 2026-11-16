@@ -145,14 +145,19 @@ def _room_for_labels(fig, height, *, right=105, bottom=75):
 # =====================================================================
 
 
-try:
+# Cache the download and standardisation for 10 minutes, like the other pages,
+# so changing a filter does not re-download every post and comment.
+@st.cache_data(ttl=600, show_spinner="Loading social engagement data from Supabase...")
+def _load_prepared_content() -> tuple[pd.DataFrame, pd.DataFrame]:
     raw_posts, raw_comments = load_engagement_data()
+    return prepare_content(raw_posts, "post"), prepare_content(raw_comments, "comment")
+
+
+try:
+    posts, comments = _load_prepared_content()
 except EngagementDataError as exc:
     st.error(f"Could not load social engagement data from Supabase. {exc}")
     st.stop()
-
-posts = prepare_content(raw_posts, "post")
-comments = prepare_content(raw_comments, "comment")
 
 if posts.empty:
     st.info("No social posts are available.")
