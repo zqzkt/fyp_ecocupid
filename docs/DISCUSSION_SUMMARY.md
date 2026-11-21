@@ -60,6 +60,7 @@ summary
 | `month`, `country`, `topic_name` | What the row covers |
 | `keywords` | The topic's keywords as a comma-separated string |
 | `summary` | JSON object with up to three summary points |
+| `updated_at` | When the row was last written |
 
 ## Running
 

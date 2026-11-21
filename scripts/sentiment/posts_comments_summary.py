@@ -9,7 +9,7 @@ import requests
 from dotenv import load_dotenv
 from google import genai
 from supabase import create_client, Client
-from datetime import date
+from datetime import date, datetime, timezone
 
 load_dotenv()
 gemini_client = genai.Client()
@@ -209,7 +209,9 @@ def summarize_month(month, force=False, countries=None):
                     .table("summary")
                     .upsert(
                         # Store the string version of the keywords in the DB
-                        {'country': country, 'topic_name': topic_name, 'keywords': keyword_string, 'month': month, 'summary': summary_dict},
+                        # updated_at is set explicitly: the column default only applies on insert, not when the upsert overwrites a row
+                        {'country': country, 'topic_name': topic_name, 'keywords': keyword_string, 'month': month, 'summary': summary_dict,
+                         'updated_at': datetime.now(timezone.utc).isoformat()},
                         on_conflict="topic_name,country,month"
                     )
                     .execute()
