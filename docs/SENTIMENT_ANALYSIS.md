@@ -14,7 +14,9 @@ emotion model (27 emotions + neutral)  -- scripts/sentiment/emotion_model.joblib
         v
 sentiment_analysis   one row per country, topic, month and year
 
-(separately)  posts_comments_summary.py --> summary   AI-written discussion points
+        |
+        v
+posts_comments_summary.py --> summary   Gemini-written discussion points
 ```
 
 ## 1. Files
@@ -164,7 +166,10 @@ This script writes short AI summaries shown on the Sentiment Analysis page.
   main consensus, overall sentiment and primary concerns.
 - Results are stored in `summary`, keyed by topic, country and month.
 
-**It is not part of the pipelines or the Data page buttons.** Run it separately:
+The social-media pipeline (and every Data page social button) runs it after
+sentiment analysis and regenerates the previous month's summaries. The Data
+page's **Rerun discussion summaries** button regenerates them without
+collecting new data. Run it separately to cover other months or countries:
 
 ```bash
 python scripts/sentiment/posts_comments_summary.py                    # previous month

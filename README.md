@@ -23,10 +23,12 @@ Project), for the sponsor EcoCupid.
 5. Shared cleaning     translate, normalise       -> clean_posts, clean_comments
 6. Environmental filter  Gemini labels each post  -> clean_posts.is_environmental
 7. Sentiment analysis  emotion model, per country and topic -> sentiment_analysis
-8. Dashboard           Streamlit reads the tables above
+8. Summaries           Gemini summarises discussion per topic -> summary
+9. Topic analysis      Gemini compares high/low engagement -> topic_based_analysis
+10. Dashboard          Streamlit reads the tables above
 ```
 
-Steps 4 to 7 depend on step 3. **Always run the news collection before the
+Steps 4 to 9 depend on step 3. **Always run the news collection before the
 social media collection.**
 
 ## What this repository contains
@@ -167,8 +169,12 @@ Notes:
   month, the all-platforms button is disabled.
 - **Rerunning one platform.** If a platform fails, fix the cause and use its
   own button (Run Facebook, Run Instagram, and so on). Each single-platform run
-  also performs shared cleaning, environmental classification and sentiment
-  analysis.
+  also performs shared cleaning, environmental classification, sentiment
+  analysis, discussion summaries and topic-based analysis.
+- **Rerunning the AI-written results.** Use **Rerun discussion summaries** or
+  **Rerun topic-based analysis** to regenerate the previous month's results
+  without collecting new data, for example after a Gemini failure. Both are
+  disabled until the month has social media data.
 - **Keep the page open and the computer awake** until the run finishes. The
   page shows a collection log afterwards.
 - Runs can take hours (the Reddit step alone takes around 2 hours) and use
@@ -217,13 +223,16 @@ setting that must stay `False` except for a one-time historical rebuild.
 6. Shared social cleaning
 7. Environmental filtering
 8. Sentiment analysis
+9. Discussion summaries (`posts_comments_summary.py`)
+10. Topic-based analysis (`topic_based_analysis.py`)
 
 If one collector fails, the pipeline continues with the next one and reports
 the failure in its summary. Shared cleaning runs once after all collectors,
 even if some failed. Environmental classification runs only if cleaning
 succeeded, and sentiment runs only after classification succeeded. The
 pipeline passes `--run-now` so sentiment can be computed on any day of the
-month. It exits with a nonzero status if a step fails.
+month. Summaries and topic-based analysis run after sentiment whenever
+classification succeeded, and regenerate the previous month's rows. It exits with a nonzero status if a step fails.
 
 ### Typical cost and time per run
 
@@ -243,6 +252,52 @@ month. It exits with a nonzero status if a step fails.
 Check the Apify, Google Cloud, X and Gemini consoles for current spend and
 quota before each run.
 
+### Topic-based analysis and summaries
+
+The social-media pipeline runs both scripts for the previous month (see
+[Social-media pipeline](#social-media-pipeline)). To regenerate the previous
+month's results without collecting new data, use **Rerun discussion
+summaries** or **Rerun topic-based analysis** on the **Data** page. Run them
+from the command line to cover other months, specific countries or topics. Both
+need `SUPABASE_URL`,
+`SUPABASE_KEY` and `GEMINI_API_KEY` (or `GOOGLE_API_KEY`). See
+[Topic-based analysis](docs/TOPIC_BASED_ANALYSIS.md) and
+[Discussion summaries](docs/DISCUSSION_SUMMARY.md) for how they work.
+
+**Topic-based analysis** writes short-form video guidance per country and topic
+to `topic_based_analysis` (shown on the **Communication Framework** page). Run
+from the repository root:
+
+```bash
+# Previous month, skipping topics already analysed for that month
+python scripts/communication_framework/topic_based_analysis.py
+
+# A specific month (YYYY-MM-01 format)
+python scripts/communication_framework/topic_based_analysis.py 2026-09-01
+
+# Only some countries or topics (always re-run)
+python scripts/communication_framework/topic_based_analysis.py 2026-09-01 --country Singapore Malaysia
+python scripts/communication_framework/topic_based_analysis.py --topic "Climate Change"
+
+# Re-run every topic for the month
+python scripts/communication_framework/topic_based_analysis.py 2026-09-01 --force
+```
+
+**Discussion summaries** write up to three summary points per country and topic
+to `summary` (shown on the **Sentiment Analysis** page). Run from the
+repository root:
+
+```bash
+# Previous month, skipping summaries that already exist
+python scripts/sentiment/posts_comments_summary.py
+
+# Specific months (YYYY-MM format; always regenerated)
+python scripts/sentiment/posts_comments_summary.py --months 2026-08 2026-09
+
+# Only some countries
+python scripts/sentiment/posts_comments_summary.py --months 2026-09 --countries Malaysia
+```
+
 ## Run the dashboard
 
 After configuring Supabase access and installing the dependencies, start the
@@ -258,7 +313,8 @@ stops with a message if `monthly_topic_stats` has no rows. Pages:
 - **Overview**
 - **Country Opportunity Explorer**
 - **Engagement Comparison**
-- **Data** — browse and export collected records, and run the collectors
+- **Data** — browse and export collected records, run the collectors, and
+  rerun the discussion summaries and topic-based analysis
 - **Communication Channels**
 - **Communication Insights**
 - **Sentiment Analysis**
@@ -295,7 +351,7 @@ the model's predicted emotions, so treat results as indicative.
 | Translation errors | Run `gcloud auth application-default login`, enable the Cloud Translation API and check `GOOGLE_CLOUD_PROJECT` |
 | YouTube or summary scripts cannot find locations | Make sure `scripts/sources/locations.json` exists |
 | Missing table errors | Apply the Supabase migration files (see [Database](#database)) |
-| A button on the Data page is greyed out | That month's data is already in Supabase |
+| A button on the Data page is greyed out | That month's data is already in Supabase. The two rerun buttons are greyed out until the month has social media data |
 | A run was interrupted | Abort any running Apify actor in the Apify Console to stop charges, then rerun the failed platform |
 
 ## Known limitations
@@ -314,3 +370,5 @@ the handover document (Section 11) for the full list by component.
 - [Reddit pipeline](docs/REDDIT_DATA_PIPELINE.md)
 - [X pipeline](docs/X_DATA_PIPELINE.md)
 - [YouTube pipeline](docs/YOUTUBE_DATA_PIPELINE.md)
+- [Topic-based analysis](docs/TOPIC_BASED_ANALYSIS.md)
+- [Discussion summaries](docs/DISCUSSION_SUMMARY.md)
