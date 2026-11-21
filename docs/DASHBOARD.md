@@ -23,7 +23,7 @@ message and stops. Run the news collection first.
 | Social Media | Engagement Metrics Overview | `views/engagement_comparison.py` | Engagement by country, across platforms, and platform by country |
 | Social Media | Sentiment Analysis | `views/sentiment_analysis.py` | Emotions behind the top topics for a month and chosen countries |
 | Social Media | Communication Framework | `views/communication_framework.py` | Recommended channels and AI messaging guidance |
-| Raw Data | Data | `views/data.py` | Browse and export last month's collected data, and run the collectors |
+| Raw Data | Data | `views/data.py` | Browse and export last month's collected data, run the collectors, and rerun the AI-written results |
 
 `views/trends.py` is in the repository but is not linked from the navigation.
 
@@ -54,19 +54,22 @@ AI discussion summary if `posts_comments_summary.py` has been run. See
 
 Has its own country and month filters. Section 1 recommends channels and
 section 2 shows messaging guidance for the period's top topics. Guidance appears
-only after `topic_based_analysis.py` has been run. See
+only after `topic_based_analysis.py` has run (it runs at the end of the social
+pipeline, or from the Data page's **Rerun topic-based analysis** button). See
 [COMMUNICATION_FRAMEWORK.md](COMMUNICATION_FRAMEWORK.md).
 
 ## 2. The Data page
 
 The Data page shows the previous calendar month's data and exports it as CSV.
-It has two groups of buttons.
+It has three groups of buttons.
 
 | Button | Runs |
 | --- | --- |
 | Run news collection | `scripts/news_datapipeline.py` |
 | Run all social media collections | `scripts/social_media_pipeline.py` |
 | Run Facebook, Instagram, Reddit, X, YouTube | `scripts/social_media_pipeline.py --platform <name>` |
+| Rerun discussion summaries | `scripts/sentiment/posts_comments_summary.py --months <previous month>` |
+| Rerun topic-based analysis | `scripts/communication_framework/topic_based_analysis.py --force` |
 
 How they behave:
 
@@ -80,8 +83,11 @@ How they behave:
   run news first.
 - The buttons use paid API credits. There is no login, so anyone who can open
   the dashboard can start a run.
-- The buttons do **not** run `posts_comments_summary.py` or
-  `topic_based_analysis.py`. Run those from the command line afterwards.
+- The social buttons run `posts_comments_summary.py` and
+  `topic_based_analysis.py` at the end of the pipeline. The two rerun buttons
+  run them alone, without collecting data, and regenerate the previous month's
+  results (for example after a Gemini failure). They are disabled until the
+  previous month has social media data. Other months need the command line.
 
 ## 3. How the dashboard loads data
 

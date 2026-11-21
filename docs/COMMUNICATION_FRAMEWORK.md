@@ -8,7 +8,7 @@ It has three parts.
 | --- | --- | --- | --- |
 | Engagement comparison | Engagement Metrics Overview | `engagement_metric_comparison.py` | Calculated live by the page |
 | Channel recommendation ("Where to communicate") | Communication Framework, section 1 | `channel_recommendations.py` | Calculated live by the page |
-| Messaging guidance ("How to communicate") | Communication Framework, section 2 | `topic_based_analysis.py` | **Run separately** by a person, stored in `topic_based_analysis` |
+| Messaging guidance ("How to communicate") | Communication Framework, section 2 | `topic_based_analysis.py` | Run at the end of the social pipeline, or from the Data page's rerun button; stored in `topic_based_analysis` |
 
 All three work from `clean_posts` and `clean_comments` (see
 [SOCIAL_CLEANING_AND_FILTERING.md](SOCIAL_CLEANING_AND_FILTERING.md)) and the
@@ -135,7 +135,12 @@ For each country and each of its top-ranked topics for the month:
 
 ### Running it
 
-From the repository root, after the social pipeline has finished:
+`social_media_pipeline.py` runs it with `--force` after sentiment analysis, so
+every Data page social button also produces guidance. To regenerate the
+previous month's guidance without collecting data, use **Rerun topic-based
+analysis** on the Data page.
+
+To run it by hand, from the repository root:
 
 ```bash
 python scripts/communication_framework/topic_based_analysis.py             # previous month
