@@ -14,6 +14,12 @@ from style import kpi_card
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEWS_PIPELINE = REPO_ROOT / "scripts" / "news_datapipeline.py"
 SOCIAL_PIPELINE = REPO_ROOT / "scripts" / "social_media_pipeline.py"
+DISCUSSION_SUMMARY = (
+    REPO_ROOT / "scripts" / "sentiment" / "posts_comments_summary.py"
+)
+TOPIC_BASED_ANALYSIS = (
+    REPO_ROOT / "scripts" / "communication_framework" / "topic_based_analysis.py"
+)
 SOCIAL_PLATFORMS = (
     ("Facebook", "facebook"),
     ("Instagram", "instagram"),
@@ -223,7 +229,8 @@ with st.container(border=True):
     st.caption(
         "If a platform fails in the full run, fix the issue and rerun it "
         "individually. Each platform run also performs shared cleaning, "
-        "environmental classification, and sentiment analysis."
+        "environmental classification, sentiment analysis, discussion "
+        "summaries, and topic-based analysis."
     )
     platform_columns = st.columns(len(SOCIAL_PLATFORMS))
     for column, (platform_name, platform_id) in zip(
@@ -248,6 +255,49 @@ with st.container(border=True):
                     ("--platform", platform_id),
                 )
                 st.rerun()
+
+    st.caption(
+        "Rerun the AI-written results for the previous month without "
+        "collecting new data, for example after a Gemini failure. Existing "
+        "results for the month are regenerated."
+    )
+    analysis_help = (
+        "No previous-month social media data in Supabase yet. Run social "
+        "media collection first."
+        if not previous_social_platforms
+        else None
+    )
+    analysis_columns = st.columns(2)
+    with analysis_columns[0]:
+        if st.button(
+            "Rerun discussion summaries",
+            key="rerun_discussion_summaries",
+            width="stretch",
+            disabled=not previous_social_platforms or cannot_check,
+            help=analysis_help
+            or "Regenerate the summaries shown on the Sentiment Analysis page.",
+        ):
+            run_collection(
+                "Discussion summaries",
+                DISCUSSION_SUMMARY,
+                ("--months", f"{previous_month_start:%Y-%m}"),
+            )
+            st.rerun()
+    with analysis_columns[1]:
+        if st.button(
+            "Rerun topic-based analysis",
+            key="rerun_topic_based_analysis",
+            width="stretch",
+            disabled=not previous_social_platforms or cannot_check,
+            help=analysis_help
+            or "Regenerate the guidance shown on the Communication Framework page.",
+        ):
+            run_collection(
+                "Topic-based analysis",
+                TOPIC_BASED_ANALYSIS,
+                ("--force",),
+            )
+            st.rerun()
 
 if data_error is not None:
     st.error(f"Could not load data for {month_start:%B %Y}. {data_error}")

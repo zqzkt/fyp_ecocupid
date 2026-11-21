@@ -1,10 +1,12 @@
-"""Run social-media collectors, cleaning, environmental filtering, and sentiment."""
+"""Run social-media collectors, cleaning, environmental filtering, sentiment,
+summaries, and topic-based analysis."""
 
 from __future__ import annotations
 
 import argparse
 import subprocess
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -32,6 +34,18 @@ SENTIMENT_ANALYSIS = (
 ENVIRONMENTAL_FILTER = (
     REPO_ROOT / "scripts" / "cleaning" / "filter_environmental.py"
 )
+DISCUSSION_SUMMARY = (
+    REPO_ROOT / "scripts" / "sentiment" / "posts_comments_summary.py"
+)
+TOPIC_BASED_ANALYSIS = (
+    REPO_ROOT / "scripts" / "communication_framework" / "topic_based_analysis.py"
+)
+
+
+def previous_month() -> str:
+    """Return the previous calendar month as YYYY-MM."""
+    first_of_month = date.today().replace(day=1)
+    return (first_of_month - timedelta(days=1)).strftime("%Y-%m")
 
 
 def run_cleaner() -> None:
@@ -136,7 +150,7 @@ def main(platform: str | None = None) -> int:
     print("SOCIAL MEDIA PIPELINE")
     print(
         "Collectors run sequentially before shared cleaning, environmental "
-        "filtering, and sentiment analysis."
+        "filtering, sentiment analysis, summaries, and topic-based analysis."
     )
 
     collectors = (
@@ -167,12 +181,33 @@ def main(platform: str | None = None) -> int:
                     ("--run-now",),
                 )
             )
+            # New data was just collected, so regenerate the month's existing rows
+            results.append(
+                run_script(
+                    DISCUSSION_SUMMARY,
+                    "posts_comments_summary.py",
+                    ("--months", previous_month()),
+                )
+            )
+            results.append(
+                run_script(
+                    TOPIC_BASED_ANALYSIS,
+                    "topic_based_analysis.py",
+                    ("--force",),
+                )
+            )
         else:
             print()
-            print("Skipping sentiment_analysis.py because environmental filtering failed.")
+            print(
+                "Skipping sentiment_analysis.py, posts_comments_summary.py and "
+                "topic_based_analysis.py because environmental filtering failed."
+            )
     else:
         print()
-        print("Skipping environmental filtering and sentiment because social cleaning failed.")
+        print(
+            "Skipping environmental filtering, sentiment, summaries and topic "
+            "analysis because social cleaning failed."
+        )
 
     print_summary(results)
     return 0 if all(succeeded for _, succeeded in results) else 1
@@ -185,7 +220,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--platform",
         choices=tuple(COLLECTOR_BY_PLATFORM),
-        help="Collect one platform, then run shared cleaning, filtering, and sentiment.",
+        help="Collect one platform, then run shared cleaning, filtering, sentiment, summaries, and topic analysis.",
     )
     args = parser.parse_args()
     raise SystemExit(main(platform=args.platform))
