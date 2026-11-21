@@ -34,7 +34,7 @@ key = os.environ.get("SUPABASE_KEY", "")
 
 supabase: Client = create_client(url, key)
 
-with open('../sources/locations.json', "r") as locations_file:
+with open(os.path.join(project_root, 'scripts', 'sources', 'locations.json'), "r") as locations_file:
     COUNTRIES = json.load(locations_file)
 
 # Attempts per Gemini call before giving up on a topic
